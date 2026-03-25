@@ -5,3 +5,16 @@ __pycache__/
 data/
 server.log
 *.egg-info/
+
+# .NET build artifacts
+OpenRAG.Api/bin/
+OpenRAG.Api/obj/
+
+# Frontend build artifacts & dependencies
+frontend/node_modules/
+frontend/dist/
+OpenRAG.Api/wwwroot/
+
+# IDE
+.vs/
+*.user

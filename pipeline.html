@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>OpenRAG Pipeline</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  body { background: #0f172a; display: flex; flex-direction: column; align-items: center; padding: 40px; font-family: sans-serif; }
+  h1 { color: #e2e8f0; margin-bottom: 32px; font-size: 1.4rem; letter-spacing: 0.05em; }
+  .mermaid { background: #1e293b; border-radius: 16px; padding: 40px; box-shadow: 0 8px 32px #0005; }
+</style>
+</head>
+<body>
+<h1>OpenRAG — Pipeline Architecture</h1>
+<div class="mermaid">
+flowchart TD
+    subgraph INGEST["📥 Ingestion Pipeline — POST /api/documents/upload"]
+        direction TB
+        A(["🗂 File Upload"]):::input --> B["💾 Save\ndata/uploads/"]
+        B --> C["⚙️ MarkItDown.convert()\nPDF · DOCX · XLSX · PPTX · HTML · ..."]
+        C --> D["💾 Save .md\ndata/converted/"]
+        D --> E
+
+        subgraph CHUNK["🔪 MarkdownChunker"]
+            direction TB
+            E["🧹 Metadata Filter\nxóa bảng phê duyệt / sửa đổi"]
+            --> F["📑 Header Splitter\n# ## ### · **1. Title**\ngiữ nguyên hierarchy path"]
+            --> G["🧩 Semantic Block Extractor\nparagraph · table · list"]
+            --> H["✂️ Adaptive Chunking\nmerge nhỏ / split lớn\n~150 tokens · overlap 20"]
+        end
+
+        H --> I["🤖 Embedder\nBAAI/bge-m3\nbatch=32 · thread pool"]
+        I --> J[("🗄 ChromaDB\ndata/chroma/\ncosine distance")]
+    end
+
+    subgraph TEXT["📝 Text Ingest — POST /api/documents/text"]
+        direction TB
+        O(["📄 Raw Markdown"]):::input --> P["💾 Save .md\ndata/converted/"]
+    end
+
+    subgraph SEARCH["🔍 Search Pipeline — POST /api/search"]
+        direction TB
+        K(["🔎 Query\n+ collection · top_k"]):::input --> L["🤖 Embed Query\nBAAI/bge-m3"]
+        L --> M[("🗄 ChromaDB\nsimilarity search")]
+        M --> N(["📋 Top-K Results\nchunk · score · metadata"]):::output
+    end
+
+    P --> E
+    J -. "shared store" .-> M
+
+    classDef input fill:#1d4ed8,stroke:#3b82f6,color:#fff,rx:20
+    classDef output fill:#065f46,stroke:#10b981,color:#fff,rx:20
+</div>
+<script>mermaid.initialize({ theme: 'dark', startOnLoad: true })</script>
+</body>
+</html>

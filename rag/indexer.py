@@ -7,9 +7,9 @@ import uuid
 from functools import partial
 from pathlib import Path
 
-import httpx
+from markitdown import MarkItDown
 
-from config import CONVERTED_DIR, MARKITDOWN_URL, UPLOAD_DIR
+from config import CONVERTED_DIR, UPLOAD_DIR
 from rag.chunker import MarkdownChunker
 from rag.embedder import get_embedder
 from rag.store import VectorStore
@@ -129,34 +129,13 @@ class Indexer:
             "message": f"Indexed {len(chunks)} chunks",
         }
 
-    _PLAIN_TEXT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".log", ".rst", ".html", ".htm"}
+    _markitdown = MarkItDown()
 
     async def _convert_to_markdown(self, file_path: Path, filename: str) -> str:
-        """Call markitdown-service to convert file to markdown."""
-        url = f"{MARKITDOWN_URL}/api/convert/file"
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                with open(file_path, "rb") as f:
-                    response = await client.post(
-                        url,
-                        files={"file": (filename, f)},
-                    )
-                if response.status_code == 200:
-                    data = response.json()
-                    return data.get("markdown", "")
-                else:
-                    logger.warning(f"Markitdown returned {response.status_code}")
-                    return self._fallback_read(file_path, filename)
-        except (httpx.ConnectError, httpx.ReadTimeout):
-            logger.warning("Markitdown service not available")
-            return self._fallback_read(file_path, filename)
-
-    def _fallback_read(self, file_path: Path, filename: str) -> str:
-        """Only read plain text files as fallback. Binary files cannot be read."""
-        ext = Path(filename).suffix.lower()
-        if ext in self._PLAIN_TEXT_EXTS:
-            logger.info(f"Fallback: reading '{filename}' as plain text")
-            return file_path.read_text(encoding="utf-8", errors="ignore")
-        else:
-            logger.error(f"Cannot process '{filename}' ({ext}) without markitdown-service running on {MARKITDOWN_URL}")
-            raise RuntimeError(f"Markitdown service required for {ext} files. Start it on {MARKITDOWN_URL}")
+        """Convert file to markdown using markitdown."""
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, lambda: self._markitdown.convert(str(file_path))
+        )
+        logger.info(f"Converted '{filename}' to markdown ({len(result.text_content)} chars)")
+        return result.text_content

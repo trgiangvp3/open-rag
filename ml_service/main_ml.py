@@ -1,0 +1,169 @@
+"""Python ML Service — thin internal API for .NET orchestration.
+
+Responsibilities:
+  - /ml/convert   : file → markdown (MarkItDown)
+  - /ml/index     : pre-chunked texts → embed + store (ChromaDB)
+  - /ml/search    : query → embed + search ChromaDB
+  - /ml/documents/delete
+  - /ml/collections/ensure | delete
+  - /ml/health
+"""
+
+import asyncio
+import logging
+import tempfile
+from contextlib import asynccontextmanager
+from functools import partial
+from pathlib import Path
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+
+from config import EMBEDDING_MODEL, ML_HOST, ML_PORT
+from rag.converter import convert_to_markdown
+from rag.embedder import get_embedder
+from rag.store import VectorStore
+from schemas_ml import (
+    CollectionRequest,
+    DeleteDocumentRequest,
+    DeleteDocumentResponse,
+    HealthResponse,
+    IndexRequest,
+    IndexResponse,
+    OkResponse,
+    SearchRequest,
+    SearchResponse,
+)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+store: VectorStore
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global store
+    logger.info("Starting ML service — pre-loading embedding model...")
+    get_embedder()
+    store = VectorStore()
+    logger.info("ML service ready.")
+    yield
+
+
+app = FastAPI(title="OpenRAG ML Service", lifespan=lifespan)
+
+
+# ── Convert ─────────────────────────────────────────────────────────────────
+
+@app.post("/ml/convert")
+async def convert_file(
+    file: UploadFile = File(...),
+    filename: str = Form(...),
+):
+    """Convert uploaded file to markdown using MarkItDown."""
+    suffix = Path(filename).suffix or ".bin"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+
+    try:
+        loop = asyncio.get_event_loop()
+        markdown = await loop.run_in_executor(
+            None, lambda: convert_to_markdown(tmp_path, filename)
+        )
+        return {"markdown": markdown, "ok": True}
+    except Exception as e:
+        logger.error(f"Conversion failed for '{filename}': {e}")
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+# ── Index (embed + store pre-chunked texts) ──────────────────────────────────
+
+@app.post("/ml/index", response_model=IndexResponse)
+async def index_chunks(req: IndexRequest):
+    """Embed pre-chunked texts and store in ChromaDB."""
+    if not req.chunks:
+        return IndexResponse(document_id=req.document_id, chunk_count=0)
+
+    texts = [c.text for c in req.chunks]
+    metadatas = [dict(c.metadata) for c in req.chunks]
+
+    embedder = get_embedder()
+    loop = asyncio.get_event_loop()
+    embeddings = await loop.run_in_executor(
+        None, partial(embedder.embed_texts, texts)
+    )
+
+    store.get_or_create_collection(req.collection)
+    store.add_chunks(
+        collection_name=req.collection,
+        document_id=req.document_id,
+        texts=texts,
+        embeddings=embeddings,
+        metadatas=metadatas,
+    )
+
+    return IndexResponse(document_id=req.document_id, chunk_count=len(texts))
+
+
+# ── Search ───────────────────────────────────────────────────────────────────
+
+@app.post("/ml/search", response_model=SearchResponse)
+async def search(req: SearchRequest):
+    """Embed query and search ChromaDB."""
+    embedder = get_embedder()
+    loop = asyncio.get_event_loop()
+    query_embedding = await loop.run_in_executor(
+        None, lambda: embedder.embed_query(req.query)
+    )
+
+    results = store.search(
+        collection_name=req.collection,
+        query_embedding=query_embedding,
+        top_k=req.top_k,
+    )
+
+    return SearchResponse(results=results, total=len(results))
+
+
+# ── Delete document ──────────────────────────────────────────────────────────
+
+@app.post("/ml/documents/delete", response_model=DeleteDocumentResponse)
+async def delete_document(req: DeleteDocumentRequest):
+    """Delete all chunks of a document from ChromaDB."""
+    deleted = store.delete_document(req.collection, req.document_id)
+    return DeleteDocumentResponse(chunks_deleted=deleted)
+
+
+# ── Collections ──────────────────────────────────────────────────────────────
+
+@app.post("/ml/collections/ensure", response_model=OkResponse)
+async def ensure_collection(req: CollectionRequest):
+    """Ensure a ChromaDB collection exists."""
+    store.get_or_create_collection(req.name)
+    return OkResponse()
+
+
+@app.post("/ml/collections/delete", response_model=OkResponse)
+async def delete_collection(req: CollectionRequest):
+    """Delete a ChromaDB collection."""
+    try:
+        store.delete_collection(req.name)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return OkResponse()
+
+
+# ── Health ───────────────────────────────────────────────────────────────────
+
+@app.get("/ml/health", response_model=HealthResponse)
+async def health():
+    embedder = get_embedder()
+    return HealthResponse(ok=True, model=EMBEDDING_MODEL, device=embedder.device)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main_ml:app", host=ML_HOST, port=ML_PORT, reload=False)

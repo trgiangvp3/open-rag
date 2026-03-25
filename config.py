@@ -31,9 +31,6 @@ CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "20"))
 # Search
 DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "5"))
 
-# Markitdown service
-MARKITDOWN_URL = os.getenv("MARKITDOWN_URL", "http://localhost:5000")
-
 # Server
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
