@@ -25,8 +25,8 @@ EMBEDDING_DEVICE = os.getenv("EMBEDDING_DEVICE", "auto")  # auto | cpu | cuda
 CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "documents")
 
 # Chunking
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "512"))
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "50"))
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "150"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "20"))
 
 # Search
 DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "5"))
