@@ -27,10 +27,20 @@ public class ChatService(AppDbContext db, MlClient ml, LlmClient llm, ILogger<Ch
             await db.SaveChangesAsync(ct);
         }
 
-        // 2. Retrieve relevant chunks
-        var chunks = await ml.SearchAsync(
-            req.Query, req.Collection, req.TopK,
-            req.UseReranker, req.SearchMode, ct);
+        // 2. Retrieve relevant chunks (supports multi-query and HyDE)
+        List<ChunkResult> chunks;
+        switch (req.SearchMode)
+        {
+            case "multi-query":
+                chunks = await MultiQuerySearchAsync(req.Query, req.Collection, req.TopK, req.UseReranker, ct);
+                break;
+            case "hyde":
+                chunks = await HydeSearchAsync(req.Query, req.Collection, req.TopK, req.UseReranker, ct);
+                break;
+            default:
+                chunks = await ml.SearchAsync(req.Query, req.Collection, req.TopK, req.UseReranker, req.SearchMode, ct);
+                break;
+        }
 
         // 3. Build conversation history for LLM
         var history = session.Messages
@@ -92,5 +102,37 @@ public class ChatService(AppDbContext db, MlClient ml, LlmClient llm, ILogger<Ch
             db.ChatSessions.Remove(session);
             await db.SaveChangesAsync(ct);
         }
+    }
+
+    private async Task<List<ChunkResult>> MultiQuerySearchAsync(
+        string query, string collection, int topK, bool useReranker, CancellationToken ct)
+    {
+        var altQueries = llm.IsEnabled ? await llm.GenerateQueriesAsync(query, 3, ct) : null;
+        var allQueries = new List<string> { query };
+        if (altQueries is not null) allQueries.AddRange(altQueries);
+
+        var allResults = new List<ChunkResult>();
+        foreach (var q in allQueries)
+        {
+            var results = await ml.SearchAsync(q, collection, topK, useReranker, "semantic", ct);
+            allResults.AddRange(results);
+        }
+
+        return allResults
+            .GroupBy(r => r.Text)
+            .Select(g => g.OrderByDescending(r => r.Score).First())
+            .OrderByDescending(r => r.Score)
+            .Take(topK)
+            .ToList();
+    }
+
+    private async Task<List<ChunkResult>> HydeSearchAsync(
+        string query, string collection, int topK, bool useReranker, CancellationToken ct)
+    {
+        var hypothetical = llm.IsEnabled ? await llm.GenerateHypotheticalAsync(query, ct) : null;
+        if (hypothetical is null)
+            return await ml.SearchAsync(query, collection, topK, useReranker, "semantic", ct);
+
+        return await ml.SearchWithTextAsync(hypothetical, collection, topK, useReranker, "semantic", ct);
     }
 }

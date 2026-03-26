@@ -110,6 +110,8 @@ function renderAnswer(text: string) {
         >
           <option value="semantic">Semantic</option>
           <option value="hybrid">Hybrid (BM25 + Semantic)</option>
+          <option value="multi-query">Multi-query (LLM)</option>
+          <option value="hyde">HyDE (LLM)</option>
         </select>
       </div>
 

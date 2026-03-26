@@ -130,6 +130,39 @@ async def index_chunks(req: IndexRequest):
     return IndexResponse(document_id=req.document_id, chunk_count=len(texts))
 
 
+# ── Embed text (for HyDE) ───────────────────────────────────────────────────
+
+@app.post("/ml/embed")
+async def embed_text(req: dict):
+    """Embed a text string and search with the resulting vector."""
+    text = req.get("text", "")
+    col = req.get("collection", "documents")
+    top_k = req.get("top_k", 5)
+    use_reranker = req.get("use_reranker", False)
+    search_mode = req.get("search_mode", "semantic")
+
+    embedder = get_embedder()
+    loop = asyncio.get_event_loop()
+    query_embedding = await loop.run_in_executor(None, lambda: embedder.embed_query(text))
+
+    semantic_top_k = top_k * 10 if (use_reranker or search_mode == "hybrid") else top_k
+    semantic_results = store.search(collection_name=col, query_embedding=query_embedding, top_k=semantic_top_k)
+    raw = semantic_results
+
+    if search_mode == "hybrid":
+        raw = await loop.run_in_executor(
+            None, lambda: hybrid_searcher.hybrid_search(col, text, raw, top_k))
+
+    if use_reranker:
+        reranker = get_reranker()
+        raw = await loop.run_in_executor(None, lambda: reranker.rerank(text, raw, top_k))
+    elif search_mode != "hybrid":
+        raw = raw[:top_k]
+
+    results = [CR(text=r["text"], score=r["score"], rerank_score=r.get("rerank_score"), metadata=r["metadata"]) for r in raw]
+    return SearchResponse(results=results, total=len(results))
+
+
 # ── Search ───────────────────────────────────────────────────────────────────
 
 @app.post("/ml/search", response_model=SearchResponse)

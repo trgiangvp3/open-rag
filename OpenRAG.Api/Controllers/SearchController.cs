@@ -15,7 +15,20 @@ public class SearchController(MlClient ml, LlmClient llm) : ControllerBase
         if (string.IsNullOrWhiteSpace(req.Query))
             return BadRequest(new { detail = "Query is required" });
 
-        var results = await ml.SearchAsync(req.Query, req.Collection, req.TopK, req.UseReranker, req.SearchMode, ct);
+        List<ChunkResult> results;
+
+        switch (req.SearchMode)
+        {
+            case "multi-query":
+                results = await MultiQuerySearchAsync(req, ct);
+                break;
+            case "hyde":
+                results = await HydeSearchAsync(req, ct);
+                break;
+            default:
+                results = await ml.SearchAsync(req.Query, req.Collection, req.TopK, req.UseReranker, req.SearchMode, ct);
+                break;
+        }
 
         if (req.Generate && llm.IsEnabled)
         {
@@ -24,5 +37,55 @@ public class SearchController(MlClient ml, LlmClient llm) : ControllerBase
         }
 
         return Ok(new SearchResponse(req.Query, results, results.Count));
+    }
+
+    private async Task<List<ChunkResult>> MultiQuerySearchAsync(SearchRequest req, CancellationToken ct)
+    {
+        // Generate alternative queries
+        var altQueries = llm.IsEnabled
+            ? await llm.GenerateQueriesAsync(req.Query, 3, ct)
+            : null;
+
+        var allQueries = new List<string> { req.Query };
+        if (altQueries is not null)
+            allQueries.AddRange(altQueries);
+
+        // Search each query
+        var allResults = new List<ChunkResult>();
+        foreach (var q in allQueries)
+        {
+            var results = await ml.SearchAsync(q, req.Collection, req.TopK, req.UseReranker, "semantic", ct);
+            allResults.AddRange(results);
+        }
+
+        // Deduplicate by text, keep highest score
+        var deduped = allResults
+            .GroupBy(r => r.Text)
+            .Select(g => g.OrderByDescending(r => r.Score).First())
+            .OrderByDescending(r => r.Score)
+            .Take(req.TopK)
+            .ToList();
+
+        return deduped;
+    }
+
+    private async Task<List<ChunkResult>> HydeSearchAsync(SearchRequest req, CancellationToken ct)
+    {
+        // Generate hypothetical document
+        var hypothetical = llm.IsEnabled
+            ? await llm.GenerateHypotheticalAsync(req.Query, ct)
+            : null;
+
+        if (hypothetical is null)
+        {
+            // Fallback to normal search if LLM unavailable
+            return await ml.SearchAsync(req.Query, req.Collection, req.TopK, req.UseReranker, "semantic", ct);
+        }
+
+        // Search using hypothetical document embedding
+        var results = await ml.SearchWithTextAsync(
+            hypothetical, req.Collection, req.TopK, req.UseReranker, "semantic", ct);
+
+        return results;
     }
 }

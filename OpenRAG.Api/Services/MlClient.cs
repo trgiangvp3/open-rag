@@ -78,6 +78,34 @@ public class MlClient(HttpClient http, ILogger<MlClient> logger)
         return result?.ChunksDeleted ?? 0;
     }
 
+    public async Task<List<ChunkResult>> SearchWithTextAsync(
+        string text, string collection, int topK,
+        bool useReranker = false, string searchMode = "semantic",
+        CancellationToken ct = default)
+    {
+        var req = new { text, collection, top_k = topK, use_reranker = useReranker, search_mode = searchMode };
+        var response = await http.PostAsJsonAsync("/ml/embed", req, JsonOpts, ct);
+        response.EnsureSuccessStatusCode();
+
+        var result = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
+        var results = new List<ChunkResult>();
+
+        foreach (var item in result.GetProperty("results").EnumerateArray())
+        {
+            var itemText = item.GetProperty("text").GetString() ?? "";
+            var score = item.GetProperty("score").GetDouble();
+            double? rerankScore = null;
+            if (item.TryGetProperty("rerank_score", out var rs) && rs.ValueKind != JsonValueKind.Null)
+                rerankScore = rs.GetDouble();
+            var meta = new Dictionary<string, object>();
+            foreach (var prop in item.GetProperty("metadata").EnumerateObject())
+                meta[prop.Name] = prop.Value.ToString();
+            results.Add(new ChunkResult(itemText, score, meta, rerankScore));
+        }
+
+        return results;
+    }
+
     public async Task<JsonElement> GetDocumentChunksAsync(Guid documentId, string collection, CancellationToken ct = default)
     {
         var response = await http.GetAsync($"/ml/documents/{documentId}/chunks?collection={collection}", ct);

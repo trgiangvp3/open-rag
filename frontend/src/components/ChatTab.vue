@@ -176,6 +176,8 @@ async function loadViewer() {
           class="w-full bg-slate-800/80 border border-slate-600/50 rounded-lg px-2 py-1.5 text-slate-300 text-xs focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/20">
           <option value="semantic">Semantic</option>
           <option value="hybrid">Hybrid</option>
+          <option value="multi-query">Multi-query</option>
+          <option value="hyde">HyDE</option>
         </select>
       </div>
 
