@@ -60,6 +60,26 @@ public class DocumentsController(DocumentService docs) : ControllerBase
         return Ok(result);
     }
 
+    [HttpGet("{documentId}/markdown")]
+    public async Task<IActionResult> GetMarkdown(
+        Guid documentId,
+        CancellationToken ct = default)
+    {
+        var result = await docs.GetDocumentMarkdownAsync(documentId, ct);
+        if (result is null) return NotFound(new { detail = "Document not found" });
+        return Ok(result);
+    }
+
+    [HttpGet("{documentId}/chunks")]
+    public async Task<IActionResult> GetChunks(
+        Guid documentId,
+        [FromQuery] string collection = "documents",
+        CancellationToken ct = default)
+    {
+        var result = await docs.GetDocumentChunksAsync(documentId, collection, ct);
+        return Ok(result);
+    }
+
     [HttpDelete("{documentId}")]
     public async Task<IActionResult> Delete(
         Guid documentId,

@@ -91,10 +91,41 @@ watch(selected, (val) => {
 })
 
 const defaultScript = `// detectHeading(line, index, allLines) -> { level, text } | null
+// Mẫu: cấu trúc văn bản pháp luật Việt Nam
+// Chương > Mục > Điều > Khoản > Điểm
 function detectHeading(line, index, allLines) {
-  // Ví dụ: phát hiện dòng bắt đầu bằng "Điều" hoặc "Chương"
-  const m = line.match(/^(Điều|Chương|Mục)\\s+\\d+[.:]/);
-  if (m) return { level: 2, text: line.trim() };
+  var clean = line.replace(/\\*\\*/g, '').trim();
+  if (!clean) return null;
+
+  // Chương — thường đứng riêng 1 dòng, tên chương ở dòng sau
+  if (/^Ch[uư][oơ]ng\\s+[IVXLCDM\\d]+/i.test(clean)) {
+    var title = clean;
+    if (index + 1 < allLines.length) {
+      var next = allLines[index + 1].replace(/\\*\\*/g, '').trim();
+      // Gộp dòng sau nếu ngắn và không phải heading khác
+      if (next && next.length < 100
+          && !/^(Ch[uư]|M[uụ]c|[ĐD]i[eề]u|\\d+[.)]|[a-zđ][.)])/i.test(next))
+        title = clean + ' — ' + next;
+    }
+    return { level: 1, text: title };
+  }
+
+  // Mục
+  if (/^M[uụ]c\\s+\\d+/i.test(clean))
+    return { level: 2, text: clean };
+
+  // Điều
+  if (/^[ĐD]i[eề]u\\s+\\d+/i.test(clean))
+    return { level: 3, text: clean };
+
+  // Khoản — "1." hoặc "1)" đầu dòng
+  var k = clean.match(/^(\\d+)[.)]/);
+  if (k) return { level: 4, text: 'Khoản ' + k[1] };
+
+  // Điểm — "a)" hoặc "a." đầu dòng (1 chữ cái)
+  var d = clean.match(/^([a-zđ])[.)]/);
+  if (d) return { level: 5, text: 'Điểm ' + d[1] };
+
   return null;
 }`
 
@@ -104,23 +135,28 @@ async function create() {
   message.value = ''
   try {
     await createCollection(newName.value.trim(), newDesc.value.trim())
-    message.value = `Da tao collection "${newName.value}"`
+    message.value = `Đã tạo collection "${newName.value}"`
     newName.value = ''
     newDesc.value = ''
     store.fetch()
   } catch (e: unknown) {
     const err = e as { response?: { data?: { message?: string } }; message?: string }
-    message.value = 'Loi: ' + (err.response?.data?.message ?? err.message)
+    message.value = 'Lỗi: ' + (err.response?.data?.message ?? err.message)
   } finally {
     creating.value = false
   }
 }
 
 async function remove(name: string) {
-  if (!confirm(`Xoa collection "${name}" va toan bo tai lieu?`)) return
-  await deleteCollection(name)
-  if (selected.value?.name === name) selected.value = null
-  store.fetch()
+  if (!confirm(`Xoá collection "${name}" và toàn bộ tài liệu?`)) return
+  try {
+    await deleteCollection(name)
+    if (selected.value?.name === name) selected.value = null
+    store.fetch()
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { message?: string } }; message?: string }
+    message.value = 'Lỗi: ' + (err.response?.data?.message ?? err.message)
+  }
 }
 
 async function saveSettings() {
@@ -135,11 +171,11 @@ async function saveSettings() {
       autoDetectHeadings: autoDetectHeadings.value,
       headingScript: headingScript.value,
     })
-    saveMsg.value = 'Luu thanh cong!'
+    saveMsg.value = 'Lưu thành công!'
     store.fetch()
   } catch (e: unknown) {
     const err = e as { response?: { data?: { message?: string } }; message?: string }
-    saveMsg.value = 'Loi: ' + (err.response?.data?.message ?? err.message)
+    saveMsg.value = 'Lỗi: ' + (err.response?.data?.message ?? err.message)
   } finally {
     saving.value = false
   }
@@ -166,7 +202,7 @@ async function runTest() {
   } catch (e: unknown) {
     const err = e as { response?: { data?: { message?: string } }; message?: string }
     testResult.value = { status: 'error', chunkCount: 0, chunks: [] }
-    saveMsg.value = 'Loi: ' + (err.response?.data?.message ?? err.message)
+    saveMsg.value = 'Lỗi: ' + (err.response?.data?.message ?? err.message)
   } finally {
     testing.value = false
   }
@@ -182,13 +218,13 @@ async function runTest() {
 
       <!-- Create -->
       <div class="bg-slate-800 border border-slate-700 rounded-xl p-3 space-y-2">
-        <h4 class="text-slate-500 text-xs font-semibold uppercase">Tao collection moi</h4>
-        <input v-model="newName" placeholder="Ten collection" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-violet-500" />
-        <input v-model="newDesc" placeholder="Mo ta (tuy chon)" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-violet-500" />
+        <h4 class="text-slate-500 text-xs font-semibold uppercase">Tạo collection mới</h4>
+        <input v-model="newName" placeholder="Tên collection" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-violet-500" />
+        <input v-model="newDesc" placeholder="Mô tả (tuỳ chọn)" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-violet-500" />
         <button @click="create" :disabled="creating" class="w-full py-1.5 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 rounded-lg text-white text-sm font-medium transition-colors">
-          Tao
+          Tạo
         </button>
-        <div v-if="message" class="text-xs" :class="message.startsWith('Loi') ? 'text-red-400' : 'text-green-400'">{{ message }}</div>
+        <div v-if="message" class="text-xs" :class="message.startsWith('Lỗi') ? 'text-red-400' : 'text-green-400'">{{ message }}</div>
       </div>
 
       <!-- Collection list -->
@@ -203,7 +239,7 @@ async function runTest() {
             <div class="min-w-0">
               <p class="text-slate-200 text-sm font-medium truncate">{{ col.name }}</p>
               <p class="text-slate-500 text-xs mt-0.5">
-                {{ col.documentCount }} tai lieu · {{ col.chunkCount }} chunks
+                {{ col.documentCount }} tài liệu · {{ col.chunkCount }} chunks
               </p>
               <p v-if="col.description" class="text-slate-600 text-xs mt-0.5 truncate">{{ col.description }}</p>
             </div>
@@ -211,7 +247,7 @@ async function runTest() {
               v-if="col.name !== 'documents'"
               @click.stop="remove(col.name)"
               class="text-slate-600 hover:text-red-400 transition-colors text-sm opacity-0 group-hover:opacity-100 flex-shrink-0 ml-2"
-              title="Xoa collection"
+              title="Xoá collection"
             >&times;</button>
           </div>
         </div>
@@ -221,33 +257,33 @@ async function runTest() {
     <!-- Right: Settings panel -->
     <div class="flex-1 flex flex-col min-w-0 overflow-y-auto">
       <div v-if="!selected" class="flex-1 flex items-center justify-center text-slate-600">
-        Chon mot collection de xem va chinh sua cau hinh chunking
+        Chọn một collection để xem và chỉnh sửa cấu hình chunking
       </div>
 
       <div v-else class="space-y-6 pb-6">
         <div class="flex items-center justify-between">
-          <h2 class="text-lg font-semibold text-slate-200">Cau hinh chunking — {{ selected.name }}</h2>
+          <h2 class="text-lg font-semibold text-slate-200">Cấu hình chunking — {{ selected.name }}</h2>
           <div class="flex items-center gap-3">
-            <span v-if="saveMsg" class="text-sm" :class="saveMsg.startsWith('Loi') ? 'text-red-400' : 'text-green-400'">{{ saveMsg }}</span>
+            <span v-if="saveMsg" class="text-sm" :class="saveMsg.startsWith('Lỗi') ? 'text-red-400' : 'text-green-400'">{{ saveMsg }}</span>
             <button
               @click="saveSettings"
               :disabled="saving"
               class="px-4 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 rounded-lg text-white text-sm font-medium transition-colors"
             >
-              {{ saving ? 'Dang luu...' : 'Luu cau hinh' }}
+              {{ saving ? 'Đang lưu...' : 'Lưu cấu hình' }}
             </button>
           </div>
         </div>
 
         <!-- Chunk size -->
         <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 space-y-4">
-          <h3 class="text-slate-300 text-sm font-semibold">Kich thuoc chunk</h3>
+          <h3 class="text-slate-300 text-sm font-semibold">Kích thước chunk</h3>
 
           <div class="grid grid-cols-2 gap-6">
             <!-- Chunk size -->
             <div class="space-y-2">
               <div class="flex items-center justify-between">
-                <label class="text-slate-400 text-xs">Kich thuoc chunk (tokens)</label>
+                <label class="text-slate-400 text-xs">Kích thước chunk (tokens)</label>
                 <span class="text-violet-400 text-sm font-mono">{{ chunkSize }}</span>
               </div>
               <input type="range" v-model.number="chunkSize" min="100" max="1000" step="50" class="w-full accent-violet-500" />
@@ -274,13 +310,13 @@ async function runTest() {
 
         <!-- Heading detection -->
         <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 space-y-4">
-          <h3 class="text-slate-300 text-sm font-semibold">Phat hien heading</h3>
+          <h3 class="text-slate-300 text-sm font-semibold">Phát hiện heading</h3>
 
           <div class="grid grid-cols-2 gap-6">
             <!-- Section token threshold -->
             <div class="space-y-2">
               <div class="flex items-center justify-between">
-                <label class="text-slate-400 text-xs">Nguong section (tokens, 0 = tat)</label>
+                <label class="text-slate-400 text-xs">Ngưỡng section (tokens, 0 = tắt)</label>
                 <span class="text-violet-400 text-sm font-mono">{{ sectionTokenThreshold }}</span>
               </div>
               <input type="range" v-model.number="sectionTokenThreshold" min="0" max="2000" step="100" class="w-full accent-violet-500" />
@@ -296,7 +332,7 @@ async function runTest() {
                 <input type="checkbox" v-model="autoDetectHeadings" class="sr-only peer" />
                 <div class="w-11 h-6 bg-slate-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-600"></div>
               </label>
-              <span class="text-slate-400 text-sm">Tu dong phat hien heading (bold, ALL-CAPS)</span>
+              <span class="text-slate-400 text-sm">Tự động phát hiện heading (bold, ALL-CAPS)</span>
             </div>
           </div>
         </div>
@@ -304,24 +340,24 @@ async function runTest() {
         <!-- JS Heading script -->
         <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 space-y-3">
           <div class="flex items-center justify-between">
-            <h3 class="text-slate-300 text-sm font-semibold">Script phat hien heading (JavaScript)</h3>
+            <h3 class="text-slate-300 text-sm font-semibold">Script phát hiện heading (JavaScript)</h3>
             <span class="text-slate-600 text-xs">Jint engine</span>
           </div>
           <p class="text-slate-500 text-xs">
-            Viet ham <code class="text-violet-400">detectHeading(line, index, allLines)</code> tra ve <code class="text-violet-400">{{ '{ level, text }' }}</code> hoac <code class="text-violet-400">null</code>.
+            Viết hàm <code class="text-violet-400">detectHeading(line, index, allLines)</code> trả về <code class="text-violet-400">{{ '{ level, text }' }}</code> hoặc <code class="text-violet-400">null</code>.
           </p>
           <div ref="editorContainer" class="h-48 rounded-lg overflow-hidden border border-slate-600"></div>
         </div>
 
         <!-- Test section -->
         <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 space-y-3">
-          <h3 class="text-slate-300 text-sm font-semibold">Thu nghiem</h3>
-          <p class="text-slate-500 text-xs">Dan noi dung markdown mau de xem ket qua chunking voi cau hinh hien tai.</p>
+          <h3 class="text-slate-300 text-sm font-semibold">Thử nghiệm</h3>
+          <p class="text-slate-500 text-xs">Dán nội dung markdown mẫu để xem kết quả chunking với cấu hình hiện tại.</p>
 
           <textarea
             v-model="testSampleText"
             rows="6"
-            placeholder="Dan noi dung markdown mau o day..."
+            placeholder="Dán nội dung markdown mẫu ở đây..."
             class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-violet-500 font-mono resize-y"
           ></textarea>
 
@@ -330,13 +366,13 @@ async function runTest() {
             :disabled="testing || !testSampleText.trim()"
             class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-lg text-white text-sm font-medium transition-colors"
           >
-            {{ testing ? 'Dang xu ly...' : 'Thu nghiem' }}
+            {{ testing ? 'Đang xử lý...' : 'Thử nghiệm' }}
           </button>
 
           <!-- Test results -->
           <div v-if="testResult" class="space-y-2 mt-3">
             <p class="text-slate-300 text-sm font-medium">
-              Ket qua: <span class="text-violet-400">{{ testResult.chunkCount }}</span> chunks
+              Kết quả: <span class="text-violet-400">{{ testResult.chunkCount }}</span> chunks
             </p>
             <div
               v-for="chunk in testResult.chunks"
@@ -345,7 +381,7 @@ async function runTest() {
             >
               <div class="flex items-center justify-between">
                 <span class="text-violet-400 text-xs font-mono">Chunk #{{ chunk.index }}</span>
-                <span class="text-slate-500 text-xs">{{ chunk.length }} ky tu</span>
+                <span class="text-slate-500 text-xs">{{ chunk.length }} ký tự</span>
               </div>
               <p v-if="chunk.metadata?.section" class="text-slate-500 text-xs italic">{{ chunk.metadata.section }}</p>
               <pre class="text-slate-300 text-xs whitespace-pre-wrap break-words max-h-32 overflow-y-auto">{{ chunk.text }}</pre>

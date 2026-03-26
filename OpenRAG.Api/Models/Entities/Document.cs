@@ -11,4 +11,5 @@ public class Document
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? IndexedAt { get; set; }
     public string Status { get; set; } = "indexing"; // indexing | indexed | failed
+    public string? MarkdownContent { get; set; }
 }

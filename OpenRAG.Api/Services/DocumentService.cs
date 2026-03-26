@@ -15,6 +15,7 @@ public class DocumentService(
     IHubContext<ProgressHub> hub,
     ILogger<DocumentService> logger)
 {
+
     private void ReportProgress(string documentId, string stage, int progress) =>
         hub.Clients.All.SendAsync("progress",
             new ProgressEvent("progress", documentId, stage, progress))
@@ -56,6 +57,7 @@ public class DocumentService(
             // Convert file -> markdown
             ReportProgress(docIdStr, "converting", 10);
             var markdown = await ml.ConvertFileAsync(fileStream, filename, ct);
+            doc.MarkdownContent = markdown;
 
             // Chunk in .NET
             ReportProgress(docIdStr, "chunking", 35);
@@ -115,6 +117,7 @@ public class DocumentService(
             CollectionId = col.Id,
             SizeBytes = System.Text.Encoding.UTF8.GetByteCount(text),
             Status = "indexing",
+            MarkdownContent = text,
         };
         db.Documents.Add(doc);
         await db.SaveChangesAsync(ct);
@@ -186,6 +189,18 @@ public class DocumentService(
         await db.SaveChangesAsync(ct);
 
         return new StatusResponse("ok", $"Deleted {deleted} chunks");
+    }
+
+    public async Task<object?> GetDocumentMarkdownAsync(Guid documentId, CancellationToken ct = default)
+    {
+        var doc = await db.Documents.FirstOrDefaultAsync(d => d.Id == documentId, ct);
+        if (doc is null) return null;
+        return new { documentId = doc.Id.ToString(), filename = doc.Filename, markdown = doc.MarkdownContent ?? "" };
+    }
+
+    public async Task<object> GetDocumentChunksAsync(Guid documentId, string collection, CancellationToken ct = default)
+    {
+        return await ml.GetDocumentChunksAsync(documentId, collection, ct);
     }
 
     private async Task<Collection> GetOrCreateCollectionAsync(string name, CancellationToken ct)

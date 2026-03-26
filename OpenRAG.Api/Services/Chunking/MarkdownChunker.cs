@@ -60,21 +60,38 @@ public class MarkdownChunker
 
         foreach (var section in sections)
         {
-            var sectionChunks = SplitSectionSemantic(section.Text);
-            foreach (var chunkText in sectionChunks)
+            var trimmedContent = section.Text.Trim();
+            if (string.IsNullOrEmpty(trimmedContent) || trimmedContent.Length < 20) continue;
+
+            var sectionTokens = CountTokens(trimmedContent);
+
+            // Build metadata for this section
+            var chunkMeta = new Dictionary<string, string>(metadata);
+            if (!string.IsNullOrEmpty(section.Header))
+                chunkMeta["section"] = section.Header;
+
+            if (sectionTokens <= _chunkSize)
             {
-                var trimmed = chunkText.Trim();
-                if (string.IsNullOrEmpty(trimmed) || trimmed.Length < 20) continue;
-
+                // Section fits in 1 chunk — keep as-is, never merge with other sections
                 var fullText = string.IsNullOrEmpty(section.Header)
-                    ? trimmed
-                    : $"{section.Header}\n\n{trimmed}";
+                    ? trimmedContent
+                    : $"{section.Header}\n\n{trimmedContent}";
+                chunks.Add(new Chunk(fullText, chunks.Count, new Dictionary<string, string>(chunkMeta)));
+            }
+            else
+            {
+                // Section too large — split semantically within the section
+                var sectionChunks = SplitSectionSemantic(trimmedContent);
+                foreach (var chunkText in sectionChunks)
+                {
+                    var trimmed = chunkText.Trim();
+                    if (string.IsNullOrEmpty(trimmed) || trimmed.Length < 20) continue;
 
-                var chunkMeta = new Dictionary<string, string>(metadata);
-                if (!string.IsNullOrEmpty(section.Header))
-                    chunkMeta["section"] = section.Header;
-
-                chunks.Add(new Chunk(fullText, chunks.Count, chunkMeta));
+                    var fullText = string.IsNullOrEmpty(section.Header)
+                        ? trimmed
+                        : $"{section.Header}\n\n{trimmed}";
+                    chunks.Add(new Chunk(fullText, chunks.Count, new Dictionary<string, string>(chunkMeta)));
+                }
             }
         }
 

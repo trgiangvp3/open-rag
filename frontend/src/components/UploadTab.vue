@@ -32,11 +32,15 @@ interface ProgressInfo { stage: string; progress: number }
 const progressMap = ref<Map<string, ProgressInfo>>(new Map())
 
 let hubConnection: signalR.HubConnection | null = null
+let hubConnected = false
 
-onMounted(async () => {
+async function ensureHub() {
+  if (hubConnected) return
+  if (hubConnection) return
+
   hubConnection = new signalR.HubConnectionBuilder()
     .withUrl('/ws/progress')
-    .withAutomaticReconnect()
+    .withAutomaticReconnect([0, 2000, 5000, 10000, 30000]) // 5 retries then stop
     .build()
 
   hubConnection.on('progress', (event: { documentId: string; stage: string; progress: number }) => {
@@ -46,15 +50,22 @@ onMounted(async () => {
     }))
   })
 
+  hubConnection.onclose(() => { hubConnected = false; hubConnection = null })
+
   try {
     await hubConnection.start()
+    hubConnected = true
   } catch {
-    // silently ignore
+    hubConnection = null
   }
-})
+}
 
 onUnmounted(async () => {
-  await hubConnection?.stop()
+  if (hubConnection) {
+    try { await hubConnection.stop() } catch { /* ignore */ }
+    hubConnection = null
+    hubConnected = false
+  }
 })
 
 // ── Unified item list ───────────────────────────────────────────────────────
@@ -135,6 +146,7 @@ function clearDone() {
 
 async function startAll() {
   processing.value = true
+  await ensureHub()
   for (const item of queue.value.filter(q => q.status === 'pending')) {
     item.status = 'uploading'
     try {

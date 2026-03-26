@@ -78,6 +78,13 @@ public class MlClient(HttpClient http, ILogger<MlClient> logger)
         return result?.ChunksDeleted ?? 0;
     }
 
+    public async Task<JsonElement> GetDocumentChunksAsync(Guid documentId, string collection, CancellationToken ct = default)
+    {
+        var response = await http.GetAsync($"/ml/documents/{documentId}/chunks?collection={collection}", ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<JsonElement>(ct);
+    }
+
     public async Task EnsureCollectionAsync(string name, CancellationToken ct = default)
     {
         var response = await http.PostAsJsonAsync("/ml/collections/ensure", new MlCollectionRequest(name), JsonOpts, ct);

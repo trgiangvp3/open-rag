@@ -120,6 +120,30 @@ export const listDocuments = (collection: string) =>
 export const deleteDocument = (id: string, collection: string) =>
   api.delete<StatusResponse>(`/documents/${id}`, { params: { collection } })
 
+export interface DocumentChunk {
+  id: string
+  text: string
+  metadata: Record<string, string>
+}
+
+export interface DocumentChunksResponse {
+  document_id: string
+  chunks: DocumentChunk[]
+  total: number
+}
+
+export const getDocumentChunks = (id: string, collection: string) =>
+  api.get<DocumentChunksResponse>(`/documents/${id}/chunks`, { params: { collection } })
+
+export interface DocumentMarkdownResponse {
+  documentId: string
+  filename: string
+  markdown: string
+}
+
+export const getDocumentMarkdown = (id: string) =>
+  api.get<DocumentMarkdownResponse>(`/documents/${id}/markdown`)
+
 // ── Collections ────────────────────────────────────────────────────────────
 
 export const listCollections = () =>

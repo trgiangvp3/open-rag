@@ -167,6 +167,31 @@ async def search(req: SearchRequest):
     return SearchResponse(results=results, total=len(results))
 
 
+# ── Get document chunks ──────────────────────────────────────────────────────
+
+@app.get("/ml/documents/{document_id}/chunks")
+async def get_document_chunks(document_id: str, collection: str = "documents"):
+    """Return all chunks for a document, ordered by chunk index."""
+    try:
+        col = store.client.get_collection(collection)
+    except Exception:
+        return {"document_id": document_id, "chunks": [], "total": 0}
+
+    result = col.get(
+        where={"document_id": document_id},
+        include=["documents", "metadatas"],
+    )
+    ids = result.get("ids") or []
+    texts = result.get("documents") or []
+    metadatas = result.get("metadatas") or []
+
+    chunks = []
+    for cid, text, meta in zip(ids, texts, metadatas):
+        chunks.append({"id": cid, "text": text, "metadata": meta})
+    chunks.sort(key=lambda c: c["id"])
+    return {"document_id": document_id, "chunks": chunks, "total": len(chunks)}
+
+
 # ── Delete document ──────────────────────────────────────────────────────────
 
 @app.post("/ml/documents/delete", response_model=DeleteDocumentResponse)
