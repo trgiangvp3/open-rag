@@ -1,50 +1,50 @@
-# ML Service Resilience — Circuit Breaker Pattern Design
+# ML Service Resilience — Thiết Kế Circuit Breaker Pattern
 
-**Status**: Design proposal
-**Target**: OpenRAG.Api (.NET 8)
-**Date**: 2026-03-26
+**Trạng thái**: Đề xuất thiết kế
+**Mục tiêu**: OpenRAG.Api (.NET 8)
+**Ngày**: 2026-03-26
 
 ---
 
-## Table of Contents
+## Mục Lục
 
-1. [Problem Statement](#1-problem-statement)
-2. [Solution Overview](#2-solution-overview)
+1. [Mô Tả Vấn Đề](#1-mô-tả-vấn-đề)
+2. [Tổng Quan Giải Pháp](#2-tổng-quan-giải-pháp)
 3. [NuGet Packages](#3-nuget-packages)
-4. [Polly Circuit Breaker — Program.cs Setup](#4-polly-circuit-breaker--programcs-setup)
-5. [MlClient — Exception Handling Wrapper](#5-mlclient--exception-handling-wrapper)
-6. [Graceful Degradation in Controllers](#6-graceful-degradation-in-controllers)
+4. [Polly Circuit Breaker — Cấu Hình Program.cs](#4-polly-circuit-breaker--cấu-hình-programcs)
+5. [MlClient — Wrapper Xử Lý Ngoại Lệ](#5-mlclient--wrapper-xử-lý-ngoại-lệ)
+6. [Graceful Degradation Trong Controllers](#6-graceful-degradation-trong-controllers)
 7. [Health Check Endpoint](#7-health-check-endpoint)
 8. [Document Retry Background Service](#8-document-retry-background-service)
 9. [Frontend UX (Vue)](#9-frontend-ux-vue)
-10. [Configuration (appsettings.json)](#10-configuration-appsettingsjson)
-11. [Deployment Considerations](#11-deployment-considerations)
+10. [Cấu Hình (appsettings.json)](#10-cấu-hình-appsettingsjson)
+11. [Lưu Ý Khi Triển Khai](#11-lưu-ý-khi-triển-khai)
 
 ---
 
-## 1. Problem Statement
+## 1. Mô Tả Vấn Đề
 
-The Python ML service (`http://localhost:8001`) is a hard dependency for all major OpenRAG operations. When it is unavailable, the following cascading failures occur:
+Python ML service (`http://localhost:8001`) là một phụ thuộc cứng cho tất cả các thao tác chính của OpenRAG. Khi service này không khả dụng, các lỗi lan truyền theo chuỗi sau sẽ xảy ra:
 
-| Scenario | Current Behaviour | Impact |
+| Tình huống | Hành vi hiện tại | Tác động |
 |---|---|---|
-| ML service is down | `HttpRequestException` propagates uncaught | HTTP 500 with no user-readable message |
-| ML service is slow / overloaded | Every request holds a connection for up to **300 s** | Thread pool exhaustion under load |
-| ML service restarts | All in-flight requests fail immediately | User loses work, re-upload required |
-| Repeated ML failures | No circuit break — every call still attempts a live connection | Thundering herd, service can't recover |
-| Upload fails mid-index | `Document.Status = "failed"` with no retry mechanism | Documents stuck permanently in failed/indexing state |
+| ML service bị ngắt | `HttpRequestException` lan truyền mà không được bắt | HTTP 500 không có thông báo lỗi rõ ràng cho người dùng |
+| ML service chậm / quá tải | Mỗi request giữ một kết nối lên đến **300 giây** | Cạn kiệt thread pool dưới tải nặng |
+| ML service khởi động lại | Tất cả request đang xử lý thất bại ngay lập tức | Người dùng mất dữ liệu, phải upload lại |
+| ML liên tục thất bại | Không có circuit break — mỗi lần gọi vẫn cố kết nối trực tiếp | Thundering herd, service không thể phục hồi |
+| Upload thất bại giữa chừng khi đang index | `Document.Status = "failed"` không có cơ chế thử lại | Documents bị kẹt vĩnh viễn ở trạng thái failed/indexing |
 
-### Root cause locations
+### Các vị trí nguyên nhân gốc rễ
 
-- `OpenRAG.Api/Program.cs` line 15–19: `HttpClient.Timeout = 300 s`, no resilience pipeline.
-- `OpenRAG.Api/Services/MlClient.cs`: every method calls `EnsureSuccessStatusCode()` without catching `HttpRequestException` or `BrokenCircuitException`.
-- `OpenRAG.Api/Controllers/SearchController.cs` and `ChatService.cs`: no try/catch around `ml.SearchAsync()`.
-- `OpenRAG.Api/Controllers/DocumentsController.cs`: returns the exception's 500 to the client.
-- No `BackgroundService` to retry documents stuck in `"failed"` or `"indexing"` status.
+- `OpenRAG.Api/Program.cs` dòng 15–19: `HttpClient.Timeout = 300 s`, không có pipeline resilience.
+- `OpenRAG.Api/Services/MlClient.cs`: mọi phương thức đều gọi `EnsureSuccessStatusCode()` mà không bắt `HttpRequestException` hay `BrokenCircuitException`.
+- `OpenRAG.Api/Controllers/SearchController.cs` và `ChatService.cs`: không có try/catch xung quanh `ml.SearchAsync()`.
+- `OpenRAG.Api/Controllers/DocumentsController.cs`: trả về exception 500 trực tiếp về client.
+- Không có `BackgroundService` để thử lại các documents bị kẹt ở trạng thái `"failed"` hoặc `"indexing"`.
 
 ---
 
-## 2. Solution Overview
+## 2. Tổng Quan Giải Pháp
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -74,33 +74,33 @@ The Python ML service (`http://localhost:8001`) is a hard dependency for all maj
 
 ## 3. NuGet Packages
 
-The project already has `Microsoft.Extensions.Http.Resilience` 10.4.0 in `OpenRAG.Api.csproj`. That package provides the full Polly v8 integration via `AddStandardResilienceHandler()` and `AddResilienceHandler()`. No additional packages are required.
+Dự án đã có `Microsoft.Extensions.Http.Resilience` 10.4.0 trong `OpenRAG.Api.csproj`. Package này cung cấp tích hợp Polly v8 đầy đủ thông qua `AddStandardResilienceHandler()` và `AddResilienceHandler()`. Không cần thêm package nào khác.
 
 ```xml
-<!-- OpenRAG.Api/OpenRAG.Api.csproj — already present, no change needed -->
+<!-- OpenRAG.Api/OpenRAG.Api.csproj — đã có sẵn, không cần thay đổi -->
 <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.4.0" />
 
-<!-- Health checks UI (optional, for /health endpoint with rich JSON) -->
+<!-- Health checks UI (tuỳ chọn, cho /health endpoint với JSON đầy đủ) -->
 <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="8.0.*" />
 ```
 
-`Microsoft.Extensions.Diagnostics.HealthChecks` ships with the .NET 8 SDK meta-package, so no separate install is needed for the health check extension methods (`AddHealthChecks()`, `MapHealthChecks()`).
+`Microsoft.Extensions.Diagnostics.HealthChecks` được tích hợp sẵn trong .NET 8 SDK meta-package, do đó không cần cài riêng cho các extension method health check (`AddHealthChecks()`, `MapHealthChecks()`).
 
 ---
 
-## 4. Polly Circuit Breaker — Program.cs Setup
+## 4. Polly Circuit Breaker — Cấu Hình Program.cs
 
-### 4.1 Strategy
+### 4.1 Chiến lược
 
-Use `AddResilienceHandler()` (from `Microsoft.Extensions.Http.Resilience`) to attach a named Polly pipeline to the `MlClient` `HttpClient`. This is preferred over `AddStandardResilienceHandler()` because the standard handler's defaults (especially its aggressive circuit-breaker thresholds) may conflict with the ML service's expected long-running embedding calls.
+Dùng `AddResilienceHandler()` (từ `Microsoft.Extensions.Http.Resilience`) để gắn một Polly pipeline có tên vào `HttpClient` của `MlClient`. Cách này được ưu tiên hơn `AddStandardResilienceHandler()` vì các giá trị mặc định của handler chuẩn (đặc biệt là ngưỡng circuit-breaker tích cực) có thể xung đột với các lần gọi embedding dài của ML service.
 
-Three strategies are nested in order (outer → inner):
+Ba chiến lược được lồng theo thứ tự (ngoài → trong):
 
-1. **Timeout** — 30 s per individual attempt (catches runaway calls before retry).
-2. **Retry** — 3 additional attempts (4 total) with exponential backoff: 1 s → 2 s → 4 s. Only retries transient HTTP errors (5xx, 408, network failures).
-3. **Circuit Breaker** — sampling-based: opens after ≥ 5 failures in a 30 s window (failure ratio ≥ 50 %). Stays open for 60 s; then half-opens to let one probe through.
+1. **Timeout** — 30 giây mỗi lần thử riêng lẻ (bắt các lần gọi bị treo trước khi retry).
+2. **Retry** — 3 lần thử thêm (tổng 4 lần) với exponential backoff: 1 s → 2 s → 4 s. Chỉ retry các lỗi HTTP tạm thời (5xx, 408, network failures).
+3. **Circuit Breaker** — dựa trên sampling: mở sau ≥ 5 lần thất bại trong cửa sổ 30 giây (tỉ lệ thất bại ≥ 50%). Giữ mở 60 giây; sau đó half-open để cho một probe request qua.
 
-### 4.2 Complete `Program.cs`
+### 4.2 `Program.cs` đầy đủ
 
 **File**: `OpenRAG.Api/Program.cs`
 
@@ -126,21 +126,21 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("Default")
         ?? "Data Source=../data/openrag.db"));
 
-// ── ML Service HTTP client with Polly resilience pipeline ─────────────────
+// ── ML Service HTTP client với Polly resilience pipeline ──────────────────
 builder.Services.AddHttpClient<MlClient>(client =>
 {
     client.BaseAddress = new Uri(
         builder.Configuration["MlService:BaseUrl"] ?? "http://localhost:8001");
 
-    // Remove the blanket 300 s timeout — per-attempt timeout is now managed by
-    // the Polly TimeoutStrategy below. Set the HttpClient timeout slightly above
-    // the maximum total time (per-attempt 30 s × 4 attempts + 3 backoff delays
-    // up to 7 s = ~127 s). Use 150 s as a safety ceiling.
+    // Bỏ blanket timeout 300 s — per-attempt timeout giờ được quản lý bởi
+    // Polly TimeoutStrategy bên dưới. Đặt HttpClient timeout cao hơn một chút
+    // so với tổng thời gian tối đa (per-attempt 30 s × 4 lần + 3 backoff delays
+    // tối đa 7 s = ~127 s). Dùng 150 s làm giới hạn an toàn.
     client.Timeout = TimeSpan.FromSeconds(150);
 })
 .AddResilienceHandler("ml-resilience", pipeline =>
 {
-    // ── 1. Per-attempt timeout (innermost — evaluated first on each try) ──
+    // ── 1. Per-attempt timeout (trong cùng — được đánh giá đầu tiên trong mỗi lần thử) ──
     pipeline.AddTimeout(new HttpTimeoutStrategyOptions
     {
         Timeout = TimeSpan.FromSeconds(
@@ -148,15 +148,15 @@ builder.Services.AddHttpClient<MlClient>(client =>
         Name = "ml-attempt-timeout",
     });
 
-    // ── 2. Retry with exponential back-off ────────────────────────────────
+    // ── 2. Retry với exponential back-off ─────────────────────────────────
     pipeline.AddRetry(new HttpRetryStrategyOptions
     {
         MaxRetryAttempts = builder.Configuration.GetValue("MlService:Resilience:MaxRetryAttempts", 3),
         BackoffType = DelayBackoffType.Exponential,
         Delay = TimeSpan.FromSeconds(1),   // 1 s, 2 s, 4 s
-        UseJitter = true,                   // avoids thundering-herd on simultaneous retries
+        UseJitter = true,                   // tránh thundering-herd khi retry đồng thời
         Name = "ml-retry",
-        // Retry on transient HTTP failures and timeouts but NOT on 4xx client errors
+        // Retry khi gặp lỗi HTTP tạm thời và timeout nhưng KHÔNG retry lỗi 4xx từ client
         ShouldHandle = new PredicateBuilder<HttpResponseMessage>()
             .Handle<HttpRequestException>()
             .Handle<TimeoutRejectedException>()
@@ -179,16 +179,16 @@ builder.Services.AddHttpClient<MlClient>(client =>
         },
     });
 
-    // ── 3. Circuit breaker (outermost — trips after repeated failures) ────
+    // ── 3. Circuit breaker (ngoài cùng — kích hoạt sau nhiều lần thất bại) ──
     pipeline.AddCircuitBreaker(new HttpCircuitBreakerStrategyOptions
     {
-        // Sampling window: track outcomes over 30 s
+        // Cửa sổ sampling: theo dõi kết quả trong 30 giây
         SamplingDuration = TimeSpan.FromSeconds(
             builder.Configuration.GetValue("MlService:Resilience:SamplingWindowSeconds", 30)),
-        // Open circuit if ≥ 50 % of calls fail AND at least 5 have been made
+        // Mở circuit nếu ≥ 50% lần gọi thất bại VÀ đã có ít nhất 5 lần gọi
         FailureRatio = builder.Configuration.GetValue("MlService:Resilience:FailureRatio", 0.5),
         MinimumThroughput = builder.Configuration.GetValue("MlService:Resilience:MinimumThroughput", 5),
-        // Stay open (reject immediately) for 60 s
+        // Giữ mở (từ chối ngay lập tức) trong 60 giây
         BreakDuration = TimeSpan.FromSeconds(
             builder.Configuration.GetValue("MlService:Resilience:BreakDurationSeconds", 60)),
         Name = "ml-circuit-breaker",
@@ -227,7 +227,7 @@ builder.Services.AddHttpClient<MlClient>(client =>
     });
 });
 
-// ── LLM client (optional — only active when Llm:ApiKey is configured) ─────
+// ── LLM client (tuỳ chọn — chỉ hoạt động khi Llm:ApiKey được cấu hình) ───
 var llmBaseUrl = builder.Configuration["Llm:BaseUrl"];
 builder.Services.AddHttpClient<LlmClient>(client =>
 {
@@ -268,7 +268,7 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
 
 var app = builder.Build();
 
-// ── Migrate DB on startup ─────────────────────────────────────────────────
+// ── Migrate DB khi khởi động ──────────────────────────────────────────────
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -298,23 +298,23 @@ app.Run();
 
 ---
 
-## 5. MlClient — Exception Handling Wrapper
+## 5. MlClient — Wrapper Xử Lý Ngoại Lệ
 
-The `MlClient` itself does **not** need to change — Polly handles retries and circuit breaking transparently at the `HttpClient` level. However, callers need to know **which exception type** to catch when the circuit is open.
+Bản thân `MlClient` **không** cần thay đổi — Polly xử lý retry và circuit breaking một cách trong suốt ở tầng `HttpClient`. Tuy nhiên, các caller cần biết **loại exception** nào cần bắt khi circuit đang mở.
 
-When the circuit breaker is open, Polly throws `Polly.CircuitBreaker.BrokenCircuitException` (or its generic variant `BrokenCircuitException<HttpResponseMessage>`). Import namespace `Polly.CircuitBreaker`.
+Khi circuit breaker mở, Polly ném ra `Polly.CircuitBreaker.BrokenCircuitException` (hoặc variant generic `BrokenCircuitException<HttpResponseMessage>`). Cần import namespace `Polly.CircuitBreaker`.
 
-For clarity, add a **thin helper** to `MlClient` that centralises the exception-to-bool translation, used only by the health check:
+Để rõ ràng hơn, thêm một **thin helper** vào `MlClient` để tập trung việc chuyển đổi exception sang bool, chỉ được dùng bởi health check:
 
-The `HealthAsync()` method in `MlClient` already catches all exceptions and returns `false`. No changes needed there.
+Phương thức `HealthAsync()` trong `MlClient` đã bắt tất cả exception và trả về `false`. Không cần thay đổi gì ở đây.
 
-### Callers catch this exception type:
+### Các caller bắt kiểu exception này:
 
 ```csharp
-// Polly.CircuitBreaker namespace
+// Namespace Polly.CircuitBreaker
 catch (BrokenCircuitException ex)
 {
-    // Circuit is open — ML service is known-bad, fail fast
+    // Circuit đang mở — ML service được biết là đang lỗi, fail nhanh
     logger.LogWarning("ML circuit open: {Message}", ex.Message);
     return StatusCode(503, new { status = "degraded", message = "..." });
 }
@@ -322,7 +322,7 @@ catch (BrokenCircuitException ex)
 
 ---
 
-## 6. Graceful Degradation in Controllers
+## 6. Graceful Degradation Trong Controllers
 
 ### 6.1 SearchController
 
@@ -390,7 +390,7 @@ public class SearchController(MlClient ml, LlmClient llm, ILogger<SearchControll
             }
             catch (Exception ex)
             {
-                // LLM is optional — degrade gracefully if it fails
+                // LLM là tuỳ chọn — degrade gracefully nếu nó thất bại
                 logger.LogWarning(ex, "LLM generation failed; returning raw search results");
             }
         }
@@ -404,10 +404,10 @@ public class SearchController(MlClient ml, LlmClient llm, ILogger<SearchControll
 
 **File**: `OpenRAG.Api/Services/ChatService.cs`
 
-The chat endpoint calls `ml.SearchAsync()` internally. The controller needs to catch circuit breaker errors:
+Chat endpoint gọi `ml.SearchAsync()` bên trong. Controller cần bắt lỗi circuit breaker:
 
 ```csharp
-// In ChatController (or wherever ChatService.ChatAsync is called):
+// Trong ChatController (hoặc nơi ChatService.ChatAsync được gọi):
 
 using Polly.CircuitBreaker;
 
@@ -491,8 +491,8 @@ public class DocumentsController(DocumentService docs, ILogger<DocumentsControll
         }
         catch (BrokenCircuitException ex)
         {
-            // Document record has already been created with status="failed" inside IngestFileAsync.
-            // The DocumentRetryService will pick it up and retry automatically.
+            // Document record đã được tạo với status="failed" bên trong IngestFileAsync.
+            // DocumentRetryService sẽ tự động chọn và thử lại.
             logger.LogWarning(
                 "Upload for '{Filename}' queued for retry — ML circuit open: {Message}",
                 safeFilename, ex.Message);
@@ -600,7 +600,7 @@ public class DocumentsController(DocumentService docs, ILogger<DocumentsControll
 
 ## 7. Health Check Endpoint
 
-### 7.1 MlServiceHealthCheck class
+### 7.1 Class MlServiceHealthCheck
 
 **File**: `OpenRAG.Api/Services/HealthChecks/MlServiceHealthCheck.cs`
 
@@ -611,9 +611,9 @@ using Polly.CircuitBreaker;
 namespace OpenRAG.Api.Services.HealthChecks;
 
 /// <summary>
-/// Reports the liveness and reachability of the Python ML service.
-/// Registered as a named health check "ml-service" with HealthStatus.Degraded on failure
-/// so the overall API still returns 200 (rather than 503) when only the ML service is down.
+/// Báo cáo trạng thái sống và khả năng tiếp cận của Python ML service.
+/// Được đăng ký là health check có tên "ml-service" với HealthStatus.Degraded khi thất bại
+/// để API tổng thể vẫn trả về 200 (thay vì 503) khi chỉ ML service bị ngắt.
 /// </summary>
 public class MlServiceHealthCheck(MlClient ml, ILogger<MlServiceHealthCheck> logger)
     : IHealthCheck
@@ -662,8 +662,8 @@ using System.Text.Json;
 namespace OpenRAG.Api.Services.HealthChecks;
 
 /// <summary>
-/// Writes a structured JSON health report instead of the plain-text default.
-/// Response format is compatible with common monitoring agents (Prometheus, Uptime Kuma, etc.).
+/// Ghi một báo cáo health dạng JSON có cấu trúc thay vì plain-text mặc định.
+/// Định dạng response tương thích với các monitoring agent phổ biến (Prometheus, Uptime Kuma, v.v.).
 /// </summary>
 public static class HealthCheckResponseWriter
 {
@@ -677,8 +677,8 @@ public static class HealthCheckResponseWriter
     {
         ctx.Response.ContentType = "application/json";
 
-        // Return 200 even when degraded so load balancers don't yank the API pod.
-        // Only return 503 when Unhealthy (complete API failure, not just ML).
+        // Trả về 200 ngay cả khi degraded để load balancer không loại bỏ API pod.
+        // Chỉ trả về 503 khi Unhealthy (API hoàn toàn thất bại, không phải chỉ ML).
         ctx.Response.StatusCode = report.Status == HealthStatus.Unhealthy ? 503 : 200;
 
         var body = new
@@ -701,7 +701,7 @@ public static class HealthCheckResponseWriter
 }
 ```
 
-### 7.3 Sample health response
+### 7.3 Ví dụ health response
 
 ```json
 GET /api/health
@@ -726,28 +726,28 @@ GET /api/health
 
 ## 8. Document Retry Background Service
 
-### 8.1 Design
+### 8.1 Thiết kế
 
-`DocumentRetryService` is an `IHostedService` running on a `PeriodicTimer` that:
+`DocumentRetryService` là một `IHostedService` chạy trên `PeriodicTimer`, thực hiện:
 
-1. Finds all documents with `Status == "failed"` or `Status == "indexing"` and `CreatedAt` older than 10 minutes (stuck during an ML restart).
-2. For each, re-reads the original file **if stored**, or re-queues the raw text chunks already in the DB.
-3. Attempts to call `ml.IndexChunksAsync()` directly. If the circuit is still open, it skips and will retry on the next tick.
-4. Updates the document status accordingly.
+1. Tìm tất cả documents có `Status == "failed"` hoặc `Status == "indexing"` và `CreatedAt` cũ hơn 10 phút (bị kẹt trong lúc ML service khởi động lại).
+2. Với mỗi document, đọc lại file gốc **nếu đã lưu**, hoặc đưa vào hàng đợi lại các raw text chunk đã có trong DB.
+3. Thực hiện gọi `ml.IndexChunksAsync()` trực tiếp. Nếu circuit vẫn mở, bỏ qua và thử lại ở lần tick tiếp theo.
+4. Cập nhật trạng thái document tương ứng.
 
-**Important design constraint**: `DocumentService.IngestFileAsync()` requires the original `Stream` (file bytes). Since uploaded files are not persisted to disk by default, the retry service can only re-attempt **embedding** (step 3 of the pipeline) — the markdown conversion step (step 1) cannot be replayed without the original bytes.
+**Ràng buộc thiết kế quan trọng**: `DocumentService.IngestFileAsync()` yêu cầu `Stream` gốc (byte của file). Vì các file upload không được lưu xuống đĩa theo mặc định, retry service chỉ có thể thử lại **embedding** (bước 3 của pipeline) — bước chuyển đổi markdown (bước 1) không thể phát lại nếu không có byte gốc.
 
-Two approaches are feasible:
+Hai cách tiếp cận khả thi:
 
-- **Option A — Store original file to disk on upload** and replay the full pipeline. Requires adding a `StoragePath` column to `Document`.
-- **Option B — Retry embedding only** by storing chunked text in the DB (a `DocumentChunk` table). This avoids re-sending the original file.
-- **Option C (implemented below) — Minimal retry** with a `RetryCount` + `RetryAfter` column. The service tries to re-call the ML `/ml/index` endpoint with the already-chunked data stored inline on the document, skipping re-conversion. This requires adding a `ChunksJson` column to `Document`.
+- **Option A — Lưu file gốc vào đĩa khi upload** và phát lại toàn bộ pipeline. Cần thêm cột `StoragePath` vào `Document`.
+- **Option B — Chỉ retry embedding** bằng cách lưu chunked text trong DB (bảng `DocumentChunk`). Tránh phải gửi lại file gốc.
+- **Option C (được triển khai bên dưới) — Minimal retry** với cột `RetryCount` + `RetryAfter`. Service cố gắng gọi lại ML endpoint `/ml/index` với dữ liệu đã chunked được lưu inline trên document, bỏ qua bước re-conversion. Cần thêm cột `ChunksJson` vào `Document`.
 
-Option B is the most architecturally sound; Option C is the fastest to implement. **The implementation below uses Option C.**
+Option B là cách tiếp cận kiến trúc tốt nhất; Option C là nhanh nhất để triển khai. **Triển khai bên dưới dùng Option C.**
 
-### 8.2 Document entity extension
+### 8.2 Mở rộng Document entity
 
-Add two columns to `OpenRAG.Api/Models/Entities/Document.cs`:
+Thêm hai cột vào `OpenRAG.Api/Models/Entities/Document.cs`:
 
 ```csharp
 namespace OpenRAG.Api.Models.Entities;
@@ -764,41 +764,41 @@ public class Document
     public DateTime? IndexedAt { get; set; }
     public string Status { get; set; } = "indexing"; // indexing | indexed | failed | retry_pending
 
-    // ── Retry support ────────────────────────────────────────────────────
+    // ── Hỗ trợ Retry ─────────────────────────────────────────────────────
     /// <summary>
-    /// JSON-serialised List&lt;MlChunkInput&gt; stored after chunking succeeds.
-    /// Allows the retry service to re-attempt embedding without re-converting the file.
-    /// Null when the document failed before or during chunking.
+    /// JSON-serialised List&lt;MlChunkInput&gt; được lưu sau khi chunking thành công.
+    /// Cho phép retry service thử lại embedding mà không cần re-convert file.
+    /// Null khi document thất bại trước hoặc trong quá trình chunking.
     /// </summary>
     public string? ChunksJson { get; set; }
 
-    /// <summary>Collection name cached here so the retry job doesn't need a JOIN.</summary>
+    /// <summary>Tên collection được cache ở đây để retry job không cần JOIN.</summary>
     public string? CollectionName { get; set; }
 
-    /// <summary>How many automatic retry attempts have been made.</summary>
+    /// <summary>Số lần đã thử lại tự động.</summary>
     public int RetryCount { get; set; } = 0;
 
-    /// <summary>Wall-clock time after which the next retry is allowed.</summary>
+    /// <summary>Thời điểm thực tế sau đó retry tiếp theo mới được phép thực hiện.</summary>
     public DateTime? RetryAfter { get; set; }
 }
 ```
 
-Add a new EF Core migration after changing the entity:
+Thêm một EF Core migration mới sau khi thay đổi entity:
 
 ```bash
 dotnet ef migrations add AddDocumentRetryColumns -p OpenRAG.Api
 ```
 
-### 8.3 DocumentService changes — save chunks after chunking
+### 8.3 Thay đổi DocumentService — lưu chunks sau khi chunking
 
-In `DocumentService.IngestFileAsync()` and `IngestTextAsync()`, persist the chunks to `doc.ChunksJson` immediately after chunking, before the ML call. This ensures retry data is available even if the ML call fails:
+Trong `DocumentService.IngestFileAsync()` và `IngestTextAsync()`, lưu các chunk vào `doc.ChunksJson` ngay sau khi chunking, trước lần gọi ML. Điều này đảm bảo dữ liệu retry luôn có sẵn ngay cả khi lần gọi ML thất bại:
 
 ```csharp
-// After: var mlChunks = chunks.Select(c => new MlChunkInput(c.Text, c.Metadata)).ToList();
-// ADD:
+// Sau: var mlChunks = chunks.Select(c => new MlChunkInput(c.Text, c.Metadata)).ToList();
+// THÊM:
 doc.ChunksJson = System.Text.Json.JsonSerializer.Serialize(mlChunks);
 doc.CollectionName = collection;
-await db.SaveChangesAsync(ct);  // persist before the ML call that might fail
+await db.SaveChangesAsync(ct);  // lưu trước lần gọi ML có thể thất bại
 ```
 
 ### 8.4 DocumentRetryService
@@ -815,12 +815,12 @@ using System.Text.Json;
 namespace OpenRAG.Api.Services.Background;
 
 /// <summary>
-/// Background service that periodically scans for documents in "failed" or stuck "indexing"
-/// status and re-attempts embedding via the ML service.
+/// Background service định kỳ quét các documents ở trạng thái "failed" hoặc "indexing" bị kẹt
+/// và thử lại embedding qua ML service.
 ///
-/// Schedule: every 5 minutes (configurable via MlService:Retry:IntervalMinutes).
-/// A document is retried up to MlService:Retry:MaxAttempts times (default: 5).
-/// After the maximum attempts the document is left in "failed" status permanently.
+/// Lịch: mỗi 5 phút (có thể cấu hình qua MlService:Retry:IntervalMinutes).
+/// Một document được thử lại tối đa MlService:Retry:MaxAttempts lần (mặc định: 5).
+/// Sau số lần tối đa, document được giữ ở trạng thái "failed" vĩnh viễn.
 /// </summary>
 public sealed class DocumentRetryService(
     IServiceScopeFactory scopeFactory,
@@ -861,10 +861,10 @@ public sealed class DocumentRetryService(
         var stuckCutoff = DateTime.UtcNow.AddMinutes(-stuckMinutes);
         var now = DateTime.UtcNow;
 
-        // Find candidates:
-        //  a) Status == "failed" with ChunksJson available (can retry embedding)
-        //  b) Status == "indexing" older than stuckMinutes (likely killed mid-way)
-        //  Both: retry count below limit, and RetryAfter has passed (or is null)
+        // Tìm các candidates:
+        //  a) Status == "failed" và có ChunksJson (có thể retry embedding)
+        //  b) Status == "indexing" cũ hơn stuckMinutes (có thể bị kill giữa chừng)
+        //  Cả hai: retry count dưới giới hạn, và RetryAfter đã qua (hoặc null)
         var candidates = await db.Documents
             .Where(d =>
                 (d.Status == "failed" || (d.Status == "indexing" && d.CreatedAt < stuckCutoff))
@@ -873,7 +873,7 @@ public sealed class DocumentRetryService(
                 && (d.RetryAfter == null || d.RetryAfter <= now))
             .OrderBy(d => d.RetryCount)
             .ThenBy(d => d.CreatedAt)
-            .Take(10)   // process in small batches to avoid overwhelming the ML service
+            .Take(10)   // xử lý theo batch nhỏ để không làm quá tải ML service
             .ToListAsync(ct);
 
         if (candidates.Count == 0)
@@ -890,7 +890,7 @@ public sealed class DocumentRetryService(
             if (ct.IsCancellationRequested) break;
 
             doc.RetryCount++;
-            // Exponential back-off for next retry: 5 min, 10 min, 20 min, 40 min, 80 min
+            // Exponential back-off cho lần retry tiếp theo: 5 phút, 10 phút, 20 phút, 40 phút, 80 phút
             doc.RetryAfter = now.AddMinutes(5 * Math.Pow(2, doc.RetryCount - 1));
 
             try
@@ -905,7 +905,7 @@ public sealed class DocumentRetryService(
                     "Retrying document {Id} ('{Filename}'), attempt {Attempt}/{Max}",
                     doc.Id, doc.Filename, doc.RetryCount, maxAttempts);
 
-                // Ensure the vector collection exists (idempotent)
+                // Đảm bảo vector collection tồn tại (idempotent)
                 await ml.EnsureCollectionAsync(collectionName, ct);
 
                 var result = await ml.IndexChunksAsync(
@@ -914,7 +914,7 @@ public sealed class DocumentRetryService(
                 doc.Status = "indexed";
                 doc.ChunkCount = result.ChunkCount;
                 doc.IndexedAt = DateTime.UtcNow;
-                doc.ChunksJson = null;  // free storage once successfully indexed
+                doc.ChunksJson = null;  // giải phóng storage sau khi index thành công
 
                 logger.LogInformation(
                     "Document {Id} ('{Filename}') successfully indexed on retry — {Chunks} chunks.",
@@ -922,15 +922,15 @@ public sealed class DocumentRetryService(
             }
             catch (BrokenCircuitException ex)
             {
-                // Circuit is open — don't burn the retry counter, just wait
+                // Circuit đang mở — không tiêu tốn retry counter, chỉ chờ
                 doc.RetryCount--;
-                doc.RetryAfter = now.AddSeconds(61); // wait slightly over break duration
+                doc.RetryAfter = now.AddSeconds(61); // chờ hơi quá break duration một chút
                 logger.LogWarning(
                     "Document retry skipped for {Id} — ML circuit open: {Message}", doc.Id, ex.Message);
             }
             catch (Exception ex)
             {
-                // Mark as failed; retry counter has already been incremented
+                // Đánh dấu là failed; retry counter đã được tăng trước đó
                 doc.Status = doc.RetryCount >= maxAttempts ? "failed" : "failed";
                 logger.LogError(ex,
                     "Document retry failed for {Id} ('{Filename}'), attempt {Attempt}",
@@ -957,7 +957,7 @@ public sealed class DocumentRetryService(
 
 ### 9.1 Shared API error utility
 
-**File**: `frontend/src/api/errors.ts`  (new file)
+**File**: `frontend/src/api/errors.ts`  (file mới)
 
 ```typescript
 import type { AxiosError } from 'axios'
@@ -970,15 +970,15 @@ export interface DegradedResponse {
 }
 
 /**
- * Returns true when the server responded with 503 and a structured degraded body.
+ * Trả về true khi server phản hồi với 503 và body degraded có cấu trúc.
  */
 export function isDegradedResponse(err: AxiosError): boolean {
   return err.response?.status === 503
 }
 
 /**
- * Extracts the user-facing message from a 503 degraded response,
- * or falls back to a generic message.
+ * Trích xuất thông báo hiển thị cho người dùng từ một 503 degraded response,
+ * hoặc fallback về thông báo chung chung.
  */
 export function getDegradedMessage(err: AxiosError): string {
   const data = err.response?.data as DegradedResponse | undefined
@@ -989,7 +989,7 @@ export function getDegradedMessage(err: AxiosError): string {
 }
 
 /**
- * Returns retry-after seconds from a 503 response, or undefined.
+ * Trả về số giây retry-after từ một 503 response, hoặc undefined.
  */
 export function getRetryAfter(err: AxiosError): number | undefined {
   const data = err.response?.data as DegradedResponse | undefined
@@ -997,14 +997,14 @@ export function getRetryAfter(err: AxiosError): number | undefined {
 }
 ```
 
-### 9.2 SearchTab.vue — improved error handling
+### 9.2 SearchTab.vue — cải thiện xử lý lỗi
 
 **File**: `frontend/src/components/SearchTab.vue`
 
-Change the `doSearch` function and the error display template:
+Thay đổi hàm `doSearch` và template hiển thị lỗi:
 
 ```typescript
-// Replace the existing doSearch() and error ref section:
+// Thay thế phần doSearch() và error ref hiện tại:
 
 import { getDegradedMessage, isDegradedResponse } from '../api/errors'
 import type { AxiosError } from 'axios'
@@ -1045,10 +1045,10 @@ async function doSearch() {
 }
 ```
 
-Update the error template block (replace the existing `<div v-if="error" ...>`):
+Cập nhật template block lỗi (thay thế `<div v-if="error" ...>` hiện có):
 
 ```html
-<!-- Error / Degraded state -->
+<!-- Trạng thái lỗi / Degraded -->
 <div
   v-if="error"
   :class="[
@@ -1086,17 +1086,17 @@ Update the error template block (replace the existing `<div v-if="error" ...>`):
 </div>
 ```
 
-### 9.3 UploadTab.vue — improved error handling
+### 9.3 UploadTab.vue — cải thiện xử lý lỗi
 
 **File**: `frontend/src/components/UploadTab.vue`
 
 ```typescript
-// Replace the uploadAll catch block:
+// Thay thế catch block trong uploadAll:
 
 import { getDegradedMessage, isDegradedResponse, getRetryAfter } from '../api/errors'
 import type { AxiosError } from 'axios'
 
-// Extend FileEntry to track degraded state:
+// Mở rộng FileEntry để theo dõi trạng thái degraded:
 interface FileEntry {
   file: File
   status: 'pending' | 'uploading' | 'done' | 'error' | 'queued'
@@ -1105,7 +1105,7 @@ interface FileEntry {
   retryAfter?: number
 }
 
-// In uploadAll():
+// Trong uploadAll():
 async function uploadAll() {
   for (const item of files.value.filter(f => f.status === 'pending')) {
     item.status = 'uploading'
@@ -1118,7 +1118,7 @@ async function uploadAll() {
     } catch (e: unknown) {
       const axiosErr = e as AxiosError
       if (isDegradedResponse(axiosErr)) {
-        // 503 with "queued" or "degraded" body
+        // 503 với body "queued" hoặc "degraded"
         const body = axiosErr.response?.data as any
         item.status = 'queued'
         item.message = body?.message ?? 'Queued for retry — ML service offline.'
@@ -1131,7 +1131,7 @@ async function uploadAll() {
   }
 }
 
-// Update statusClass to include 'queued':
+// Cập nhật statusClass để bao gồm 'queued':
 const statusClass = (s: string) => ({
   pending: 'text-slate-400',
   uploading: 'text-yellow-400 animate-pulse',
@@ -1141,10 +1141,10 @@ const statusClass = (s: string) => ({
 }[s] ?? 'text-slate-400')
 ```
 
-Update the file list template to show queued state:
+Cập nhật template danh sách file để hiển thị trạng thái queued:
 
 ```html
-<!-- Inside the v-for file loop, replace the status display: -->
+<!-- Bên trong vòng lặp v-for file, thay thế phần hiển thị status: -->
 <span :class="['text-xs ml-2 max-w-xs truncate', statusClass(f.status)]">
   <template v-if="f.status === 'uploading' && getProgress(f)">
     {{ stageLabel(getProgress(f)!.stage) }}
@@ -1161,9 +1161,9 @@ Update the file list template to show queued state:
 
 ---
 
-## 10. Configuration (appsettings.json)
+## 10. Cấu Hình (appsettings.json)
 
-Add the full resilience configuration block to `OpenRAG.Api/appsettings.json`:
+Thêm block cấu hình resilience đầy đủ vào `OpenRAG.Api/appsettings.json`:
 
 ```json
 {
@@ -1203,7 +1203,7 @@ Add the full resilience configuration block to `OpenRAG.Api/appsettings.json`:
 }
 ```
 
-**Production override** (`appsettings.Production.json`):
+**Override cho môi trường Production** (`appsettings.Production.json`):
 
 ```json
 {
@@ -1224,11 +1224,11 @@ Add the full resilience configuration block to `OpenRAG.Api/appsettings.json`:
 
 ---
 
-## 11. Deployment Considerations
+## 11. Lưu Ý Khi Triển Khai
 
-### 11.1 Timeout arithmetic
+### 11.1 Tính toán Timeout
 
-With the pipeline configured as above, the **worst-case latency** before a caller receives a 503 is:
+Với pipeline được cấu hình như trên, **độ trễ tệ nhất** trước khi caller nhận được 503 là:
 
 ```
 attempts × per-attempt-timeout + sum(backoff delays)
@@ -1236,31 +1236,31 @@ attempts × per-attempt-timeout + sum(backoff delays)
 = 127 s
 ```
 
-This replaces the current 300 s blanket timeout. Set `HttpClient.Timeout = 150 s` (as shown in `Program.cs`) as a safety ceiling above this.
+Đây là sự thay thế cho blanket timeout 300 giây hiện tại. Đặt `HttpClient.Timeout = 150 s` (như đã trình bày trong `Program.cs`) làm giới hạn an toàn phía trên.
 
-For document embedding (large files), the per-attempt timeout may need to be 60 s in production. Use `appsettings.Production.json` to override.
+Đối với document embedding (file lớn), per-attempt timeout có thể cần là 60 giây trong môi trường production. Dùng `appsettings.Production.json` để override.
 
-### 11.2 HealthAsync bypass
+### 11.2 Bypass HealthAsync
 
-The `MlClient.HealthAsync()` method is called by the health check on a short `PeriodicTimer`. It must **not** go through the retry/circuit-breaker pipeline (otherwise a single health check could trigger circuit opening).
+Phương thức `MlClient.HealthAsync()` được gọi bởi health check trên một `PeriodicTimer` ngắn. Nó **không được** đi qua pipeline retry/circuit-breaker (nếu không, một health check đơn lẻ có thể kích hoạt circuit mở).
 
-Two options:
-- **Option A**: Register a separate `HttpClient` named `"ml-health"` without Polly for health checks only.
-- **Option B**: The health check already catches `BrokenCircuitException` and returns `Degraded` before any HTTP call is made — Polly throws immediately when the circuit is open, so the health check is fast.
+Hai lựa chọn:
+- **Option A**: Đăng ký một `HttpClient` riêng có tên `"ml-health"` không có Polly, chỉ dùng cho health check.
+- **Option B**: Health check đã bắt `BrokenCircuitException` và trả về `Degraded` trước khi bất kỳ lần gọi HTTP nào được thực hiện — Polly ném ngay lập tức khi circuit mở, vì vậy health check nhanh chóng.
 
-Option B works out of the box because the circuit breaker is the outermost strategy: when the circuit is open, it throws `BrokenCircuitException` before the timeout or retry strategies fire. The `HealthAsync()` method's own try/catch in `MlClient` will also catch this and return `false`.
+Option B hoạt động tốt ngay từ đầu vì circuit breaker là chiến lược ngoài cùng: khi circuit mở, nó ném `BrokenCircuitException` trước khi các chiến lược timeout hoặc retry kích hoạt. Try/catch trong `HealthAsync()` của `MlClient` cũng sẽ bắt exception này và trả về `false`.
 
-### 11.3 SignalR progress during retry
+### 11.3 SignalR progress trong quá trình retry
 
-When `DocumentRetryService` re-indexes a document, it currently does **not** emit SignalR progress events because it doesn't have access to `IHubContext<ProgressHub>`. To add progress:
+Khi `DocumentRetryService` re-index một document, nó hiện tại **không** phát sự kiện SignalR progress vì không có quyền truy cập vào `IHubContext<ProgressHub>`. Để thêm progress:
 
-- Inject `IHubContext<ProgressHub>` into `DocumentRetryService`.
-- Emit a `"retry_indexing"` stage event when starting retry and `"done"` / `"failed"` on completion.
-- On the frontend, listen for these events in `UploadTab.vue` and update documents with `status === "queued"`.
+- Inject `IHubContext<ProgressHub>` vào `DocumentRetryService`.
+- Phát sự kiện stage `"retry_indexing"` khi bắt đầu retry và `"done"` / `"failed"` khi hoàn thành.
+- Ở phía frontend, lắng nghe các sự kiện này trong `UploadTab.vue` và cập nhật documents có `status === "queued"`.
 
 ### 11.4 EF Core migration
 
-After adding `ChunksJson`, `CollectionName`, `RetryCount`, and `RetryAfter` columns to `Document`:
+Sau khi thêm các cột `ChunksJson`, `CollectionName`, `RetryCount`, và `RetryAfter` vào `Document`:
 
 ```bash
 cd OpenRAG.Api
@@ -1268,57 +1268,57 @@ dotnet ef migrations add AddDocumentRetryColumns
 dotnet ef database update
 ```
 
-The migration will be a purely additive `ALTER TABLE` — no data loss.
+Migration sẽ là một `ALTER TABLE` chỉ thêm thuần tuý — không mất dữ liệu.
 
-### 11.5 ChunksJson storage cost
+### 11.5 Chi phí lưu trữ ChunksJson
 
-`ChunksJson` stores the full text of all chunks for a document. For a 100 MB PDF this could be several MB of JSON. Mitigation options:
+`ChunksJson` lưu toàn bộ text của tất cả chunks cho một document. Với PDF 100 MB, có thể là vài MB JSON. Các phương án giảm thiểu:
 
-- Set `doc.ChunksJson = null` once indexing succeeds (already done in the retry service).
-- Add a size check: skip storing `ChunksJson` if the serialised length exceeds, e.g., 10 MB (very large documents can simply be re-uploaded if ML was down).
-- Move to a blob/file storage in production (S3, Azure Blob).
+- Đặt `doc.ChunksJson = null` ngay sau khi indexing thành công (đã thực hiện trong retry service).
+- Thêm kiểm tra kích thước: bỏ qua việc lưu `ChunksJson` nếu độ dài serialised vượt quá, ví dụ, 10 MB (các document rất lớn có thể đơn giản được upload lại nếu ML bị ngắt).
+- Chuyển sang blob/file storage trong production (S3, Azure Blob).
 
-### 11.6 Kubernetes / Docker considerations
+### 11.6 Lưu ý về Kubernetes / Docker
 
-- **Readiness probe**: point to `/api/health`. When ML is degraded, return 200 (so the API pod stays in rotation — it can still serve cached data and queue uploads). Only return 503 when the API itself (DB) is unhealthy.
-- **Liveness probe**: a simple `GET /api/health` on a 30 s interval; use `failureThreshold: 3` before killing the pod.
-- **ML service readiness**: configure Kubernetes to only route traffic to the ML pod once `/ml/health` returns 200. This prevents the circuit from opening during normal pod startup.
+- **Readiness probe**: trỏ đến `/api/health`. Khi ML bị degraded, trả về 200 (để API pod vẫn trong rotation — nó vẫn có thể phục vụ cached data và queue uploads). Chỉ trả về 503 khi bản thân API (DB) bị unhealthy.
+- **Liveness probe**: một `GET /api/health` đơn giản với interval 30 giây; dùng `failureThreshold: 3` trước khi kill pod.
+- **ML service readiness**: cấu hình Kubernetes chỉ route traffic đến ML pod khi `/ml/health` trả về 200. Điều này ngăn circuit bị mở trong lúc pod khởi động bình thường.
 
 ### 11.7 Observability
 
-All three Polly strategies emit named events (`OnRetry`, `OnOpened`, `OnClosed`, `OnHalfOpened`) that log structured messages via `ILogger`. These are compatible with any log sink (Serilog, Application Insights, etc.).
+Cả ba chiến lược Polly đều phát ra các sự kiện có tên (`OnRetry`, `OnOpened`, `OnClosed`, `OnHalfOpened`) ghi các log có cấu trúc thông qua `ILogger`. Chúng tương thích với bất kỳ log sink nào (Serilog, Application Insights, v.v.).
 
-For metrics, add:
+Để thêm metrics:
 
 ```csharp
-// In Program.cs, after AddResilienceHandler:
+// Trong Program.cs, sau AddResilienceHandler:
 builder.Services.AddOpenTelemetry()
     .WithMetrics(m => m.AddAspNetCoreInstrumentation()
                        .AddHttpClientInstrumentation());
 ```
 
-Polly v8 automatically emits OpenTelemetry metrics for retry counts, circuit state changes, and timeout counts under the `polly.*` meter namespace.
+Polly v8 tự động phát ra OpenTelemetry metrics cho retry count, thay đổi trạng thái circuit, và timeout count dưới namespace meter `polly.*`.
 
 ---
 
-## Summary of New Files
+## Tổng Kết Các File Mới
 
-| File | Purpose |
+| File | Mục đích |
 |---|---|
-| `OpenRAG.Api/Services/HealthChecks/MlServiceHealthCheck.cs` | `IHealthCheck` that pings `/ml/health` |
-| `OpenRAG.Api/Services/HealthChecks/HealthCheckResponseWriter.cs` | JSON formatter for `/api/health` |
-| `OpenRAG.Api/Services/Background/DocumentRetryService.cs` | `BackgroundService` retrying failed documents |
-| `frontend/src/api/errors.ts` | Shared 503 parsing utilities for Vue |
+| `OpenRAG.Api/Services/HealthChecks/MlServiceHealthCheck.cs` | `IHealthCheck` ping đến `/ml/health` |
+| `OpenRAG.Api/Services/HealthChecks/HealthCheckResponseWriter.cs` | JSON formatter cho `/api/health` |
+| `OpenRAG.Api/Services/Background/DocumentRetryService.cs` | `BackgroundService` thử lại các document thất bại |
+| `frontend/src/api/errors.ts` | Shared utilities phân tích 503 cho Vue |
 
-## Summary of Modified Files
+## Tổng Kết Các File Được Chỉnh Sửa
 
-| File | Change |
+| File | Thay đổi |
 |---|---|
-| `OpenRAG.Api/Program.cs` | Polly pipeline, health checks, hosted service registration |
-| `OpenRAG.Api/Controllers/SearchController.cs` | Catch `BrokenCircuitException`, return 503 |
-| `OpenRAG.Api/Controllers/DocumentsController.cs` | Catch `BrokenCircuitException`, return 503 with retry hint |
-| `OpenRAG.Api/Controllers/ChatController.cs` | Catch `BrokenCircuitException`, return 503 |
-| `OpenRAG.Api/Models/Entities/Document.cs` | Add `ChunksJson`, `CollectionName`, `RetryCount`, `RetryAfter` |
-| `OpenRAG.Api/Services/DocumentService.cs` | Persist `ChunksJson` + `CollectionName` before ML call |
-| `frontend/src/components/SearchTab.vue` | Degraded state display + retry button |
-| `frontend/src/components/UploadTab.vue` | Queued state display for 503 uploads |
+| `OpenRAG.Api/Program.cs` | Đăng ký Polly pipeline, health checks, hosted service |
+| `OpenRAG.Api/Controllers/SearchController.cs` | Bắt `BrokenCircuitException`, trả về 503 |
+| `OpenRAG.Api/Controllers/DocumentsController.cs` | Bắt `BrokenCircuitException`, trả về 503 với gợi ý retry |
+| `OpenRAG.Api/Controllers/ChatController.cs` | Bắt `BrokenCircuitException`, trả về 503 |
+| `OpenRAG.Api/Models/Entities/Document.cs` | Thêm `ChunksJson`, `CollectionName`, `RetryCount`, `RetryAfter` |
+| `OpenRAG.Api/Services/DocumentService.cs` | Lưu `ChunksJson` + `CollectionName` trước lần gọi ML |
+| `frontend/src/components/SearchTab.vue` | Hiển thị trạng thái degraded + nút retry |
+| `frontend/src/components/UploadTab.vue` | Hiển thị trạng thái queued cho upload 503 |

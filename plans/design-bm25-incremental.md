@@ -1,63 +1,63 @@
-# BM25 Incremental Index Updates — Design Document
+# BM25 Cập Nhật Index Gia Tăng — Tài Liệu Thiết Kế
 
-**Date**: 2026-03-26
-**Author**: Architecture Review
-**Status**: Proposed
-**Target file**: `ml_service/rag/hybrid_search.py`
+**Ngày**: 2026-03-26
+**Tác giả**: Architecture Review
+**Trạng thái**: Đề xuất
+**File mục tiêu**: `ml_service/rag/hybrid_search.py`
 
 ---
 
-## 1. Problem Statement
+## 1. Mô Tả Vấn Đề
 
-### Current Implementation
+### Triển Khai Hiện Tại
 
-`HybridSearcher` in `ml_service/rag/hybrid_search.py` maintains per-collection BM25 indexes using a simple `dict[str, tuple[BM25Okapi, list[dict]]]`. The lifecycle is:
+`HybridSearcher` trong `ml_service/rag/hybrid_search.py` duy trì các BM25 index theo từng collection bằng một `dict[str, tuple[BM25Okapi, list[dict]]]` đơn giản. Vòng đời hoạt động như sau:
 
-1. On the first `bm25_search` or `hybrid_search` call after any invalidation, `_get_index()` calls `_build_index()`.
-2. `_build_index()` calls `collection.get(include=["documents", "metadatas"])` — a full table scan of ChromaDB — then constructs a brand-new `BM25Okapi` object from all tokenized texts.
-3. Both `index_chunks` and `delete_document` endpoints call `hybrid_searcher.invalidate(collection_name)`, which simply removes the entry from `_indexes`.
-4. Result: the next search after **any** write triggers a full rebuild.
+1. Ở lần gọi `bm25_search` hoặc `hybrid_search` đầu tiên sau bất kỳ lần vô hiệu hóa nào, `_get_index()` gọi `_build_index()`.
+2. `_build_index()` gọi `collection.get(include=["documents", "metadatas"])` — quét toàn bộ bảng trong ChromaDB — sau đó xây dựng một đối tượng `BM25Okapi` mới hoàn toàn từ tất cả các văn bản đã được token hóa.
+3. Cả hai endpoint `index_chunks` và `delete_document` đều gọi `hybrid_searcher.invalidate(collection_name)`, thao tác này chỉ đơn giản là xóa entry khỏi `_indexes`.
+4. Kết quả: lần tìm kiếm tiếp theo sau **bất kỳ** thao tác ghi nào đều kích hoạt xây dựng lại toàn bộ.
 
-### Concrete Pain Points
+### Các Vấn Đề Cụ Thể
 
-| Scenario | Impact |
+| Tình huống | Ảnh hưởng |
 |---|---|
-| 100K chunks in a collection | `collection.get()` returns ~100K strings; `BM25Okapi([...])` builds IDF tables over all of them. Cold-start latency: 5–30 s |
-| Adding a single new document (50 chunks) | Full 100K rebuild instead of appending 50 entries |
-| 10 concurrent writers | Index invalidated 10 times; 10 concurrent cold-start rebuilds race under a single lock, serialised to 10× rebuild time |
-| 50+ collections in memory | No eviction — unbounded memory growth |
-| `_lock` held during `_build_index()` | All other searches on **any** collection blocked while one collection rebuilds |
+| 100K chunk trong một collection | `collection.get()` trả về ~100K chuỗi; `BM25Okapi([...])` xây dựng bảng IDF trên tất cả chúng. Độ trễ khởi động nguội: 5–30 giây |
+| Thêm một tài liệu mới (50 chunk) | Xây dựng lại toàn bộ 100K thay vì chỉ thêm 50 mục |
+| 10 writer đồng thời | Index bị vô hiệu hóa 10 lần; 10 lần xây dựng lại khởi động nguội đồng thời cạnh tranh dưới một lock duy nhất, bị tuần tự hóa thành 10× thời gian xây dựng lại |
+| 50+ collection trong bộ nhớ | Không có cơ chế xóa bỏ — bộ nhớ tăng không giới hạn |
+| `_lock` được giữ trong `_build_index()` | Tất cả các tìm kiếm khác trên **bất kỳ** collection nào đều bị chặn trong khi một collection đang xây dựng lại |
 
-### Root Cause
+### Nguyên Nhân Gốc Rễ
 
-`rank_bm25`'s `BM25Okapi` does not expose an incremental API. The constructor is the only entry point, so the current code treats every structural change as a full-rebuild event. The lock design compounds the problem: it serialises both cache lookups and the expensive rebuild inside the same critical section.
-
----
-
-## 2. Solution Overview
-
-### Chosen Approach: Delta Buffer + Background Rebuild + Soft Deletes
-
-Rather than adopting a new on-disk index library immediately, the design extends the existing `rank_bm25`-based approach with four complementary mechanisms:
-
-1. **Delta buffer**: newly added chunks are buffered in a list. Searches query both the existing `BM25Okapi` instance and the small delta buffer, then merge results.
-2. **Soft deletes**: deleted chunk IDs are recorded in a `set`. Results from both the main index and the delta buffer are filtered against this set before returning.
-3. **Background async rebuild**: when the delta buffer exceeds a configurable threshold (or after a delete), a background thread rebuilds the full index without holding the query lock. Searches continue to serve the stale-but-functional index until the new one is swapped in atomically.
-4. **LRU eviction**: a per-process LRU cache limits memory to `BM25_MAX_CACHED_COLLECTIONS` (default 50) collections.
-
-This gives O(1) amortised writes, non-blocking reads, and a bounded memory footprint — without adding new binary dependencies (Whoosh, Tantivy) or changing the external API at all.
-
-### Why Not Whoosh / Tantivy Immediately?
-
-See Section 8 for the detailed trade-off discussion. The short answer: persistent index libraries solve the persistence problem but introduce deployment complexity (native extensions, disk I/O, schema migrations) that is disproportionate for an embedded ML microservice. The delta-buffer approach can be layered on top of `rank_bm25` in under 200 lines and adopted incrementally.
+`BM25Okapi` của `rank_bm25` không cung cấp API gia tăng. Constructor là điểm vào duy nhất, vì vậy code hiện tại coi mọi thay đổi cấu trúc như một sự kiện xây dựng lại toàn bộ. Thiết kế lock làm trầm trọng thêm vấn đề: nó tuần tự hóa cả tra cứu cache và xây dựng lại tốn kém bên trong cùng một critical section.
 
 ---
 
-## 3. Configuration
+## 2. Tổng Quan Giải Pháp
 
-### 3.1 New Environment Variables
+### Phương Pháp Được Chọn: Delta Buffer + Xây Dựng Lại Nền + Soft Deletes
 
-Add to `ml_service/config.py`:
+Thay vì áp dụng ngay một thư viện index trên đĩa mới, thiết kế này mở rộng phương pháp dựa trên `rank_bm25` hiện có với bốn cơ chế bổ sung:
+
+1. **Delta buffer**: các chunk mới được thêm sẽ được đệm vào một danh sách. Tìm kiếm truy vấn cả instance `BM25Okapi` hiện có lẫn delta buffer nhỏ, sau đó hợp nhất kết quả.
+2. **Soft deletes**: các ID chunk đã xóa được ghi lại trong một `set`. Kết quả từ cả index chính lẫn delta buffer đều được lọc qua tập này trước khi trả về.
+3. **Xây dựng lại nền bất đồng bộ**: khi delta buffer vượt quá ngưỡng có thể cấu hình (hoặc sau một lần xóa), một luồng nền xây dựng lại toàn bộ index mà không giữ query lock. Tìm kiếm tiếp tục phục vụ từ index cũ nhưng vẫn hoạt động được cho đến khi index mới được hoán đổi vào theo cách nguyên tử.
+4. **LRU eviction**: một LRU cache theo tiến trình giới hạn bộ nhớ xuống `BM25_MAX_CACHED_COLLECTIONS` (mặc định 50) collection.
+
+Điều này mang lại O(1) amortised cho các thao tác ghi, đọc không bị chặn, và bộ nhớ sử dụng có giới hạn — mà không cần thêm dependency nhị phân mới (Whoosh, Tantivy) hoặc thay đổi API bên ngoài.
+
+### Tại Sao Không Dùng Whoosh / Tantivy Ngay?
+
+Xem Mục 8 để thảo luận chi tiết về sự đánh đổi. Câu trả lời ngắn gọn: các thư viện index bền vững giải quyết vấn đề lưu trữ nhưng lại mang đến sự phức tạp trong triển khai (native extensions, disk I/O, schema migrations) không cân xứng với một ML microservice nhúng. Phương pháp delta-buffer có thể được xây dựng thêm trên `rank_bm25` trong dưới 200 dòng và áp dụng dần dần.
+
+---
+
+## 3. Cấu Hình
+
+### 3.1 Biến Môi Trường Mới
+
+Thêm vào `ml_service/config.py`:
 
 ```python
 # ml_service/config.py  (additions only — append after existing variables)
@@ -79,41 +79,41 @@ BM25_REBUILD_WORKERS: int = int(os.getenv("BM25_REBUILD_WORKERS", "2"))
 
 ---
 
-## 4. Data Structures
+## 4. Cấu Trúc Dữ Liệu
 
-Before showing code, it helps to understand the state held per collection.
+Trước khi trình bày code, cần hiểu trạng thái được lưu trữ cho mỗi collection.
 
 ```
 IndexEntry
-├── bm25          : BM25Okapi | None          — main index (may be None if never built)
-├── chunks        : list[dict]                — parallel to bm25 corpus; each is {text, metadata, id}
-├── delta_texts   : list[str]                 — texts added since last rebuild
-├── delta_ids     : list[str]                 — chunk IDs for delta_texts
-├── delta_meta    : list[dict]                — metadata for delta_texts
-├── deleted_ids   : set[str]                  — soft-deleted chunk IDs
-├── version       : int                       — monotonically increasing write counter
-├── rebuilding    : bool                      — True while background rebuild is running
-└── last_used     : float                     — time.monotonic() for LRU eviction
+├── bm25          : BM25Okapi | None          — index chính (có thể là None nếu chưa được xây dựng)
+├── chunks        : list[dict]                — song song với corpus bm25; mỗi phần tử là {text, metadata, id}
+├── delta_texts   : list[str]                 — các văn bản được thêm kể từ lần xây dựng lại cuối
+├── delta_ids     : list[str]                 — ID chunk cho delta_texts
+├── delta_meta    : list[dict]                — metadata cho delta_texts
+├── deleted_ids   : set[str]                  — ID chunk đã bị soft-delete
+├── version       : int                       — bộ đếm ghi tăng đơn điệu
+├── rebuilding    : bool                      — True khi đang chạy xây dựng lại nền
+└── last_used     : float                     — time.monotonic() để LRU eviction
 ```
 
-The main `_indexes` dict maps `collection_name → IndexEntry`. Access is protected by a per-entry `RLock` (for the entry itself) and a top-level `Lock` (for the `_indexes` dict).
+Dict `_indexes` chính ánh xạ `collection_name → IndexEntry`. Truy cập được bảo vệ bởi một `RLock` theo entry (cho chính entry đó) và một `Lock` cấp cao nhất (cho dict `_indexes`).
 
 ---
 
-## 5. Incremental Add
+## 5. Thêm Gia Tăng
 
-### 5.1 Design
+### 5.1 Thiết Kế
 
-When `index_chunks` is called, instead of invalidating the index, the new chunks are appended to `delta_texts` / `delta_ids` / `delta_meta`. The search path queries both the main `BM25Okapi` and the delta buffer. If the delta buffer size exceeds `BM25_REBUILD_BATCH_SIZE`, a background rebuild is scheduled.
+Khi `index_chunks` được gọi, thay vì vô hiệu hóa index, các chunk mới được thêm vào `delta_texts` / `delta_ids` / `delta_meta`. Đường dẫn tìm kiếm truy vấn cả `BM25Okapi` chính lẫn delta buffer. Nếu kích thước delta buffer vượt quá `BM25_REBUILD_BATCH_SIZE`, một lần xây dựng lại nền sẽ được lên lịch.
 
-This means:
-- Write path: O(k) where k = number of new chunks (just list appends)
-- Query path: O(n + k) where n = main index size, k = delta size (two separate BM25 score vectors merged)
-- Background rebuild: O(n + k), but off the critical path
+Điều này có nghĩa là:
+- Đường dẫn ghi: O(k) với k = số chunk mới (chỉ là thêm vào danh sách)
+- Đường dẫn truy vấn: O(n + k) với n = kích thước index chính, k = kích thước delta (hai vector điểm BM25 riêng biệt được hợp nhất)
+- Xây dựng lại nền: O(n + k), nhưng ngoài critical path
 
 ### 5.2 Code
 
-**File: `ml_service/rag/hybrid_search.py`** (complete replacement)
+**File: `ml_service/rag/hybrid_search.py`** (thay thế hoàn toàn)
 
 ```python
 """Hybrid search: BM25 + semantic via Reciprocal Rank Fusion.
@@ -182,20 +182,20 @@ class IndexEntry:
 
 ---
 
-## 6. Incremental Delete (Soft Deletes)
+## 6. Xóa Gia Tăng (Soft Deletes)
 
-### 6.1 Design
+### 6.1 Thiết Kế
 
-Deleting chunks from an in-memory `BM25Okapi` is impossible without rebuilding it. Instead:
+Việc xóa chunk khỏi `BM25Okapi` trong bộ nhớ là không thể mà không xây dựng lại. Thay vào đó:
 
-1. The chunk IDs to delete are added to `deleted_ids`.
-2. The version counter is bumped.
-3. A background rebuild is scheduled (the deleted chunks waste memory in the main corpus until the rebuild completes, but that is bounded — they do not appear in results).
-4. Both the main-index result path and the delta-buffer result path filter against `deleted_ids`.
+1. Các ID chunk cần xóa được thêm vào `deleted_ids`.
+2. Bộ đếm version được tăng lên.
+3. Một lần xây dựng lại nền được lên lịch (các chunk đã xóa vẫn chiếm bộ nhớ trong corpus chính cho đến khi xây dựng lại hoàn thành, nhưng điều đó có giới hạn — chúng không xuất hiện trong kết quả).
+4. Cả đường dẫn kết quả của index chính lẫn delta buffer đều lọc theo `deleted_ids`.
 
-This means a delete is O(d) where d = number of deleted chunk IDs, not O(n).
+Điều này có nghĩa là một lần xóa là O(d) với d = số ID chunk bị xóa, không phải O(n).
 
-### 6.2 Code (method on `HybridSearcher`)
+### 6.2 Code (phương thức trên `HybridSearcher`)
 
 ```python
     def add_chunks(
@@ -241,20 +241,20 @@ This means a delete is O(d) where d = number of deleted chunk IDs, not O(n).
 
 ---
 
-## 7. Background Async Rebuild
+## 7. Xây Dựng Lại Nền Bất Đồng Bộ
 
-### 7.1 Design
+### 7.1 Thiết Kế
 
-A `ThreadPoolExecutor` with `BM25_REBUILD_WORKERS` threads handles all rebuilds. The rebuild procedure:
+Một `ThreadPoolExecutor` với `BM25_REBUILD_WORKERS` luồng xử lý tất cả các lần xây dựng lại. Quy trình xây dựng lại:
 
-1. Acquires the entry lock, sets `rebuilding = True`, reads `version` at that moment.
-2. Releases the lock and performs the expensive ChromaDB fetch + `BM25Okapi()` construction **outside the lock**.
-3. Re-acquires the lock. If the `version` has changed since step 1, discards this rebuild result (a newer write happened while rebuilding — a fresh rebuild will be scheduled by that write).
-4. Otherwise, atomically swaps in the new `bm25` and `chunks`, clears the delta buffer and `deleted_ids`, sets `rebuilding = False`.
+1. Lấy entry lock, đặt `rebuilding = True`, đọc `version` tại thời điểm đó.
+2. Giải phóng lock và thực hiện việc tốn kém là fetch ChromaDB + xây dựng `BM25Okapi()` **bên ngoài lock**.
+3. Lấy lại lock. Nếu `version` đã thay đổi kể từ bước 1, hủy kết quả xây dựng lại này (một thao tác ghi mới hơn đã xảy ra trong khi đang xây dựng lại — một lần xây dựng lại mới sẽ được lên lịch bởi thao tác ghi đó).
+4. Ngược lại, hoán đổi nguyên tử `bm25` và `chunks` mới vào, xóa delta buffer và `deleted_ids`, đặt `rebuilding = False`.
 
-Searches during the rebuild window see the previous `bm25` + delta buffer, which may include some stale deletes (filtered by `deleted_ids`) and the current delta adds. This is safe and correct.
+Các tìm kiếm trong cửa sổ xây dựng lại sẽ thấy `bm25` cũ + delta buffer, có thể bao gồm một số lần xóa cũ (được lọc bởi `deleted_ids`) và các thêm delta hiện tại. Điều này an toàn và đúng đắn.
 
-### 7.2 Full `HybridSearcher` Class
+### 7.2 Class `HybridSearcher` Đầy Đủ
 
 ```python
 class HybridSearcher:
@@ -570,19 +570,19 @@ class HybridSearcher:
 
 ---
 
-## 8. Index Versioning
+## 8. Phiên Bản Index
 
-### 8.1 Purpose
+### 8.1 Mục Đích
 
-The `version` counter on `IndexEntry` serves three purposes:
+Bộ đếm `version` trên `IndexEntry` phục vụ ba mục đích:
 
-1. **Stale-rebuild detection**: `_do_rebuild` captures `version` before the expensive ChromaDB fetch. If `version` changes while rebuilding, the result is discarded and the latest writer's rebuild will run instead. This prevents a slow old rebuild from overwriting a fresher partial index.
+1. **Phát hiện xây dựng lại cũ**: `_do_rebuild` ghi lại `version` trước khi thực hiện fetch ChromaDB tốn kém. Nếu `version` thay đổi trong khi đang xây dựng lại, kết quả sẽ bị hủy và lần xây dựng lại của writer mới nhất sẽ chạy thay thế. Điều này ngăn một lần xây dựng lại cũ chậm ghi đè lên index mới hơn một phần.
 
-2. **Monitoring / observability**: version can be exposed via a `/ml/health` or `/ml/bm25/stats` endpoint so operators can see how many writes have occurred since the last rebuild.
+2. **Giám sát / quan sát**: version có thể được hiển thị qua endpoint `/ml/health` hoặc `/ml/bm25/stats` để operator có thể xem bao nhiêu lần ghi đã xảy ra kể từ lần xây dựng lại cuối.
 
-3. **Future: optimistic reads**: a caller can record the version before a search, re-read it after, and detect if the index was mutated during the search. Currently unused but costs nothing to maintain.
+3. **Tương lai: đọc lạc quan**: caller có thể ghi lại version trước khi tìm kiếm, đọc lại sau đó, và phát hiện nếu index bị thay đổi trong khi tìm kiếm. Hiện tại chưa được sử dụng nhưng không tốn chi phí để duy trì.
 
-### 8.2 Version Exposure Endpoint (optional, in `main_ml.py`)
+### 8.2 Endpoint Hiển Thị Version (tùy chọn, trong `main_ml.py`)
 
 ```python
 # ml_service/main_ml.py — add after the /ml/health endpoint
@@ -620,25 +620,25 @@ async def bm25_stats():
 
 ---
 
-## 9. Memory Management (LRU Eviction)
+## 9. Quản Lý Bộ Nhớ (LRU Eviction)
 
-### 9.1 Design
+### 9.1 Thiết Kế
 
-The `_catalog` is an `OrderedDict`. Every access via `_get_or_create_entry` calls `move_to_end(collection_name)` to mark it as most-recently-used. When a new entry would push the catalog over `BM25_MAX_CACHED_COLLECTIONS`, the oldest entry is popped with `popitem(last=False)`.
+`_catalog` là một `OrderedDict`. Mỗi lần truy cập qua `_get_or_create_entry` sẽ gọi `move_to_end(collection_name)` để đánh dấu nó là được sử dụng gần nhất. Khi một entry mới sẽ đẩy catalog vượt quá `BM25_MAX_CACHED_COLLECTIONS`, entry cũ nhất sẽ bị xóa bằng `popitem(last=False)`.
 
-Evicted entries are simply garbage-collected. The next search on an evicted collection triggers a cold-start rebuild (same path as a brand-new collection).
+Các entry bị xóa chỉ đơn giản là được thu gom rác. Lần tìm kiếm tiếp theo trên một collection bị xóa sẽ kích hoạt xây dựng lại khởi động nguội (cùng đường dẫn với một collection mới hoàn toàn).
 
-### 9.2 Memory Estimate
+### 9.2 Ước Tính Bộ Nhớ
 
-| Chunks per collection | Avg tokens per chunk | Memory per index |
+| Chunk mỗi collection | Số token trung bình mỗi chunk | Bộ nhớ mỗi index |
 |---|---|---|
-| 10,000 | 100 tokens | ~80 MB |
-| 50,000 | 100 tokens | ~400 MB |
-| 100,000 | 100 tokens | ~800 MB |
+| 10.000 | 100 token | ~80 MB |
+| 50.000 | 100 token | ~400 MB |
+| 100.000 | 100 token | ~800 MB |
 
-With `BM25_MAX_CACHED_COLLECTIONS=50` and average collections of 10K chunks: ceiling ~4 GB. For larger deployments, lower the limit to 10–20. The delta buffer adds negligible memory since it only holds chunks added since the last rebuild.
+Với `BM25_MAX_CACHED_COLLECTIONS=50` và trung bình 10K chunk mỗi collection: giới hạn tối đa ~4 GB. Với các triển khai lớn hơn, hãy giảm giới hạn xuống 10–20. Delta buffer thêm bộ nhớ không đáng kể vì nó chỉ chứa các chunk được thêm kể từ lần xây dựng lại cuối.
 
-### 9.3 LRU Code (already integrated in `_get_or_create_entry` above)
+### 9.3 Code LRU (đã được tích hợp trong `_get_or_create_entry` ở trên)
 
 ```python
     def _get_or_create_entry(self, collection_name: str) -> IndexEntry:
@@ -661,11 +661,11 @@ With `BM25_MAX_CACHED_COLLECTIONS=50` and average collections of 10K chunks: cei
 
 ---
 
-## 10. Integration: Updated `main_ml.py` Call Sites
+## 10. Tích Hợp: Các Điểm Gọi Đã Cập Nhật Trong `main_ml.py`
 
-The two endpoints that currently call `hybrid_searcher.invalidate()` need to be updated to call the new write API instead. This requires knowing the chunk IDs that were written or deleted — both are already available in `store.py`.
+Hai endpoint hiện đang gọi `hybrid_searcher.invalidate()` cần được cập nhật để gọi API ghi mới thay thế. Điều này yêu cầu biết các ID chunk đã được ghi hoặc xóa — cả hai đều đã có sẵn trong `store.py`.
 
-### 10.1 `store.py` — expose chunk IDs from `add_chunks`
+### 10.1 `store.py` — hiển thị chunk ID từ `add_chunks`
 
 ```python
 # ml_service/rag/store.py — modified add_chunks signature
@@ -695,7 +695,7 @@ The two endpoints that currently call `hybrid_searcher.invalidate()` need to be 
         return ids                           # <-- return the IDs
 ```
 
-### 10.2 `store.py` — expose deleted IDs from `delete_document`
+### 10.2 `store.py` — hiển thị ID đã xóa từ `delete_document`
 
 ```python
 # ml_service/rag/store.py — delete_document already returns the count;
@@ -711,7 +711,7 @@ The two endpoints that currently call `hybrid_searcher.invalidate()` need to be 
         return 0, []
 ```
 
-### 10.3 `main_ml.py` — updated endpoint handlers
+### 10.3 `main_ml.py` — các handler endpoint đã cập nhật
 
 ```python
 # ml_service/main_ml.py — /ml/index handler (partial)
@@ -766,45 +766,45 @@ async def delete_document(req: DeleteDocumentRequest):
 
 ---
 
-## 11. Alternative Approaches: Whoosh and Tantivy
+## 11. Các Phương Pháp Thay Thế: Whoosh và Tantivy
 
 ### 11.1 Whoosh
 
-[Whoosh](https://whoosh.readthedocs.io/) is a pure-Python, file-based full-text search library with true incremental index updates, segment-level merges, and BM25F scoring.
+[Whoosh](https://whoosh.readthedocs.io/) là một thư viện tìm kiếm toàn văn bản thuần Python, dựa trên file với các cập nhật index gia tăng thực sự, merge theo segment, và tính điểm BM25F.
 
-**Pros**:
-- True incremental writes: `writer.add_document()` / `writer.delete_by_term()` without full rebuild
-- Persistent index survives service restarts — no cold-start rebuild
-- Tested multi-threading model with `BufferedWriter` and `AsyncWriter`
-- Pure Python — no native extension, works on Windows without a C toolchain
+**Ưu điểm**:
+- Ghi gia tăng thực sự: `writer.add_document()` / `writer.delete_by_term()` không cần xây dựng lại toàn bộ
+- Index bền vững tồn tại qua các lần khởi động lại dịch vụ — không cần xây dựng lại khởi động nguội
+- Mô hình đa luồng đã được kiểm thử với `BufferedWriter` và `AsyncWriter`
+- Thuần Python — không có native extension, hoạt động trên Windows không cần C toolchain
 
-**Cons**:
-- Active development effectively stalled (last release 2013, Python 3 forks exist but fragmented)
-- Disk I/O for every write — adds latency on NVMe-backed containers but noticeable on HDD or NFS mounts
-- Schema must be defined upfront; adding new metadata fields requires reindexing
-- Memory-mapped file handles can conflict with Windows file locking semantics
-- Not designed for vectors — BM25 only; cannot be used for the embedding side
+**Nhược điểm**:
+- Phát triển tích cực thực tế đã dừng lại (bản phát hành cuối 2013, các fork Python 3 tồn tại nhưng phân mảnh)
+- Disk I/O cho mỗi lần ghi — thêm độ trễ trên container NVMe-backed nhưng đáng chú ý trên HDD hoặc NFS mounts
+- Schema phải được định nghĩa trước; thêm trường metadata mới yêu cầu reindex
+- Các file handle ánh xạ bộ nhớ có thể xung đột với ngữ nghĩa khóa file của Windows
+- Không được thiết kế cho vector — chỉ BM25; không thể dùng cho phía embedding
 
-**Rough migration**: replace `BM25Okapi` with a `whoosh.index.Index` per collection, use `AsyncWriter` for writes, `searcher.search(query, limit=top_k)` for reads. A collection of 100K chunks would take ~500 MB on disk (compressed segments).
+**Di chuyển ước tính**: thay thế `BM25Okapi` bằng `whoosh.index.Index` cho mỗi collection, sử dụng `AsyncWriter` cho ghi, `searcher.search(query, limit=top_k)` cho đọc. Một collection 100K chunk sẽ chiếm ~500 MB trên đĩa (các segment nén).
 
 ### 11.2 Tantivy-py
 
-[tantivy-py](https://github.com/quickwit-oss/tantivy-py) wraps [Tantivy](https://github.com/quickwit-oss/tantivy) (a Rust full-text search engine) with Python bindings. Tantivy is the engine behind Quickwit and is production-grade.
+[tantivy-py](https://github.com/quickwit-oss/tantivy-py) bao bọc [Tantivy](https://github.com/quickwit-oss/tantivy) (một engine tìm kiếm toàn văn bản Rust) với các binding Python. Tantivy là engine đằng sau Quickwit và đạt cấp độ production.
 
-**Pros**:
-- Extremely fast: segment-level Lucene-like architecture with WAND query acceleration
-- True incremental updates (commit = atomic segment flush; merge in background)
-- Persistent; survives restarts
-- BM25F scoring with configurable k1/b parameters
-- Active development; Python 3.8–3.12 wheels available on PyPI
+**Ưu điểm**:
+- Cực kỳ nhanh: kiến trúc giống Lucene theo segment với WAND query acceleration
+- Cập nhật gia tăng thực sự (commit = atomic segment flush; merge ở nền)
+- Bền vững; tồn tại qua các lần khởi động lại
+- Tính điểm BM25F với tham số k1/b có thể cấu hình
+- Phát triển tích cực; Python 3.8–3.12 wheels có sẵn trên PyPI
 
-**Cons**:
-- Native Rust extension — requires prebuilt wheel or Rust toolchain; adds ~15 MB to Docker image
-- Python bindings are thinner than Whoosh's API; some advanced features require understanding Tantivy's segment model
-- Schema still needs upfront definition; field additions require re-index
-- Not pure Python — Windows wheel availability is generally good (PyPI provides it) but can be brittle in unusual environments
+**Nhược điểm**:
+- Native Rust extension — yêu cầu prebuilt wheel hoặc Rust toolchain; thêm ~15 MB vào Docker image
+- Python binding mỏng hơn API của Whoosh; một số tính năng nâng cao yêu cầu hiểu mô hình segment của Tantivy
+- Schema vẫn cần định nghĩa trước; thêm field yêu cầu re-index
+- Không thuần Python — wheel Windows thường có sẵn (PyPI cung cấp) nhưng có thể không ổn định trong môi trường bất thường
 
-**Rough migration**:
+**Di chuyển ước tính**:
 
 ```python
 # tantivy-based BM25 index (sketch, not for direct copy-paste)
@@ -833,73 +833,73 @@ query = index.parse_query(query_text, ["body"])
 hits = searcher.search(query, limit=top_k)
 ```
 
-### 11.3 Comparison Table
+### 11.3 Bảng So Sánh
 
-| Dimension | Current (delta-buffer) | Whoosh | Tantivy-py |
+| Chiều | Hiện tại (delta-buffer) | Whoosh | Tantivy-py |
 |---|---|---|---|
-| Write latency | O(k) — list append | O(k) — segment write | O(k) — segment write |
-| Read latency (cold) | O(n) — ChromaDB scan | O(1) — index on disk | O(1) — index on disk |
-| Read latency (warm) | O(log n) + O(delta) | O(log n) | O(log n) |
-| Memory usage | Bounded by LRU | Low (disk-backed) | Low (disk-backed) |
-| Persistence | No (in-memory) | Yes | Yes |
-| Native deps | None (pure Python) | None (pure Python) | Rust wheel |
-| Windows support | Full | Full | Good (PyPI wheels) |
-| Concurrent writes | Serialised per entry | AsyncWriter supports it | Writer lock (one writer) |
-| Score compatibility | Exact BM25Okapi match | BM25F (close) | BM25F (close) |
-| Maintenance burden | Low (no new dep) | Medium (stale library) | Medium (Rust wheel mgmt) |
-| **Recommended for** | Current scale (<500K chunks) | If persistence needed, no Rust | If >500K chunks or HA needed |
+| Độ trễ ghi | O(k) — thêm vào danh sách | O(k) — ghi segment | O(k) — ghi segment |
+| Độ trễ đọc (nguội) | O(n) — quét ChromaDB | O(1) — index trên đĩa | O(1) — index trên đĩa |
+| Độ trễ đọc (ấm) | O(log n) + O(delta) | O(log n) | O(log n) |
+| Sử dụng bộ nhớ | Giới hạn bởi LRU | Thấp (disk-backed) | Thấp (disk-backed) |
+| Bền vững | Không (trong bộ nhớ) | Có | Có |
+| Phụ thuộc native | Không (thuần Python) | Không (thuần Python) | Rust wheel |
+| Hỗ trợ Windows | Đầy đủ | Đầy đủ | Tốt (PyPI wheels) |
+| Ghi đồng thời | Tuần tự theo entry | AsyncWriter hỗ trợ | Writer lock (một writer) |
+| Tương thích điểm | Khớp BM25Okapi chính xác | BM25F (gần) | BM25F (gần) |
+| Gánh nặng bảo trì | Thấp (không có dep mới) | Trung bình (thư viện cũ) | Trung bình (quản lý Rust wheel) |
+| **Khuyến nghị cho** | Quy mô hiện tại (<500K chunk) | Nếu cần bền vững, không Rust | Nếu >500K chunk hoặc cần HA |
 
-**Recommendation**: adopt the delta-buffer approach now. If the collection size grows beyond 500K chunks per collection or if the service needs to restart without a 30-second warm-up rebuild, migrate to Tantivy-py as the persistent BM25 backend while keeping the same `HybridSearcher` interface.
+**Khuyến nghị**: áp dụng phương pháp delta-buffer ngay bây giờ. Nếu kích thước collection tăng vượt 500K chunk mỗi collection hoặc nếu dịch vụ cần khởi động lại mà không cần 30 giây xây dựng lại khởi động ấm, hãy di chuyển sang Tantivy-py làm backend BM25 bền vững trong khi giữ nguyên interface `HybridSearcher`.
 
 ---
 
-## 12. Performance Benchmarks (Expected)
+## 12. Benchmark Hiệu Năng (Dự Kiến)
 
-Measurements are estimates based on typical Python/rank_bm25 performance on a 4-core machine with 16 GB RAM. Actual numbers will vary.
+Các đo lường là ước tính dựa trên hiệu năng Python/rank_bm25 điển hình trên máy 4-core với 16 GB RAM. Số thực tế sẽ thay đổi.
 
-### 12.1 Write Path
+### 12.1 Đường Dẫn Ghi
 
-| Operation | Old (`invalidate`) | New (`add_chunks`) | Speedup |
+| Thao tác | Cũ (`invalidate`) | Mới (`add_chunks`) | Tăng tốc |
 |---|---|---|---|
-| Add 50 chunks to 100K-chunk collection | Marks dirty; next search triggers 8–30s rebuild | List append: ~0.1 ms | ~100,000× |
-| Delete 1 document (200 chunks) | Marks dirty; next search triggers 8–30s rebuild | Set update: ~0.05 ms | ~200,000× |
+| Thêm 50 chunk vào collection 100K-chunk | Đánh dấu dirty; tìm kiếm tiếp theo kích hoạt xây dựng lại 8–30 giây | Thêm vào danh sách: ~0.1 ms | ~100.000× |
+| Xóa 1 tài liệu (200 chunk) | Đánh dấu dirty; tìm kiếm tiếp theo kích hoạt xây dựng lại 8–30 giây | Cập nhật set: ~0.05 ms | ~200.000× |
 
-### 12.2 Read Path (Search Latency)
+### 12.2 Đường Dẫn Đọc (Độ Trễ Tìm Kiếm)
 
-| Scenario | Old | New | Note |
+| Tình huống | Cũ | Mới | Ghi chú |
 |---|---|---|---|
-| Cold start (never built) | 8–30 s blocking | 8–30 s (first time only, then warm) | Same cold start; only happens once |
-| Warm read (no delta) | O(n) scoring only | O(n) scoring only | Identical |
-| Warm read (500-chunk delta) | N/A (stale triggers rebuild) | O(n) main + O(500) delta | Extra ~1–2 ms for delta BM25 |
-| Read during background rebuild | N/A (blocked by lock) | Served from stale main + delta | 0 ms extra latency |
+| Khởi động nguội (chưa được xây dựng) | Chặn 8–30 giây | 8–30 giây (chỉ lần đầu, sau đó ấm) | Cùng khởi động nguội; chỉ xảy ra một lần |
+| Đọc ấm (không có delta) | Chỉ tính điểm O(n) | Chỉ tính điểm O(n) | Giống nhau |
+| Đọc ấm (delta 500 chunk) | N/A (cũ kích hoạt xây dựng lại) | O(n) chính + O(500) delta | Thêm ~1–2 ms cho delta BM25 |
+| Đọc trong khi xây dựng lại nền | N/A (bị chặn bởi lock) | Phục vụ từ main cũ + delta | 0 ms độ trễ thêm |
 
-### 12.3 Memory Usage Comparison
+### 12.3 So Sánh Sử Dụng Bộ Nhớ
 
-| Metric | Old | New |
+| Chỉ số | Cũ | Mới |
 |---|---|---|
-| Memory per collection (100K chunks) | ~800 MB (1 per active collection) | ~800 MB main + O(delta) — same per-entry |
-| Unbounded collections | Grows forever | Capped at `BM25_MAX_CACHED_COLLECTIONS` × 800 MB |
-| Memory pressure under 50 collections | 40 GB+ | Capped at 40 GB default, tune to 5–10 for safety |
+| Bộ nhớ mỗi collection (100K chunk) | ~800 MB (1 cho mỗi collection active) | ~800 MB main + O(delta) — cùng mỗi entry |
+| Collection không giới hạn | Tăng mãi mãi | Giới hạn ở `BM25_MAX_CACHED_COLLECTIONS` × 800 MB |
+| Áp lực bộ nhớ dưới 50 collection | 40 GB+ | Giới hạn tối đa 40 GB mặc định, điều chỉnh xuống 5–10 để an toàn |
 
-### 12.4 Concurrency
+### 12.4 Đồng Thời
 
-| Scenario | Old | New |
+| Tình huống | Cũ | Mới |
 |---|---|---|
-| 10 concurrent index writes | 10 serialised full rebuilds after each write | 10 list appends; 1 background rebuild |
-| 10 concurrent searches | All blocked if any one triggers cold start | 9 served from stale; 1 waits for cold start (first time only) |
-| Background rebuild races | N/A | Version mismatch detection discards stale rebuilds |
+| 10 lần ghi index đồng thời | 10 lần xây dựng lại toàn bộ tuần tự sau mỗi lần ghi | 10 lần thêm vào danh sách; 1 lần xây dựng lại nền |
+| 10 tìm kiếm đồng thời | Tất cả bị chặn nếu một cái kích hoạt khởi động nguội | 9 được phục vụ từ cũ; 1 chờ khởi động nguội (chỉ lần đầu) |
+| Xây dựng lại nền cạnh tranh | N/A | Phát hiện version mismatch hủy các lần xây dựng lại cũ |
 
 ---
 
-## 13. Implementation Checklist
+## 13. Danh Sách Kiểm Tra Triển Khai
 
-- [ ] Add `BM25_MAX_CACHED_COLLECTIONS`, `BM25_REBUILD_BATCH_SIZE`, `BM25_REBUILD_WORKERS` to `ml_service/config.py`
-- [ ] Add `BM25_MAX_CACHED_COLLECTIONS`, `BM25_REBUILD_BATCH_SIZE`, `BM25_REBUILD_WORKERS` to `.env.example`
-- [ ] Replace `ml_service/rag/hybrid_search.py` with the new `IndexEntry` + `HybridSearcher` implementation
-- [ ] Update `ml_service/rag/store.py`: `add_chunks` returns `list[str]` of IDs; `delete_document` returns `tuple[int, list[str]]`
-- [ ] Update `ml_service/main_ml.py`: replace `invalidate()` calls with `add_chunks()` / `mark_deleted()` calls
-- [ ] Add `GET /ml/bm25/stats` diagnostic endpoint (optional)
-- [ ] Update `HybridSearcher.shutdown()` call in the FastAPI `lifespan` teardown:
+- [ ] Thêm `BM25_MAX_CACHED_COLLECTIONS`, `BM25_REBUILD_BATCH_SIZE`, `BM25_REBUILD_WORKERS` vào `ml_service/config.py`
+- [ ] Thêm `BM25_MAX_CACHED_COLLECTIONS`, `BM25_REBUILD_BATCH_SIZE`, `BM25_REBUILD_WORKERS` vào `.env.example`
+- [ ] Thay thế `ml_service/rag/hybrid_search.py` bằng triển khai `IndexEntry` + `HybridSearcher` mới
+- [ ] Cập nhật `ml_service/rag/store.py`: `add_chunks` trả về `list[str]` các ID; `delete_document` trả về `tuple[int, list[str]]`
+- [ ] Cập nhật `ml_service/main_ml.py`: thay thế các lần gọi `invalidate()` bằng các lần gọi `add_chunks()` / `mark_deleted()`
+- [ ] Thêm endpoint chẩn đoán `GET /ml/bm25/stats` (tùy chọn)
+- [ ] Cập nhật lần gọi `HybridSearcher.shutdown()` trong teardown `lifespan` của FastAPI:
   ```python
   @asynccontextmanager
   async def lifespan(app: FastAPI):
@@ -907,23 +907,23 @@ Measurements are estimates based on typical Python/rank_bm25 performance on a 4-
       yield
       hybrid_searcher.shutdown()   # drain background rebuild threads
   ```
-- [ ] Write unit tests for:
-  - Delta buffer add + search returns delta results
-  - Soft delete filters deleted IDs from both main and delta
-  - Version mismatch causes rebuild discard
-  - LRU eviction at capacity
-  - Background rebuild swaps index atomically
+- [ ] Viết unit test cho:
+  - Delta buffer thêm + tìm kiếm trả về kết quả delta
+  - Soft delete lọc các ID đã xóa khỏi cả main lẫn delta
+  - Version mismatch khiến xây dựng lại bị hủy
+  - LRU eviction khi đầy dung lượng
+  - Xây dựng lại nền hoán đổi index theo cách nguyên tử
 
 ---
 
-## 14. Trade-offs and Limitations
+## 14. Đánh Đổi và Giới Hạn
 
-| Trade-off | Impact | Mitigation |
+| Đánh đổi | Ảnh hưởng | Giảm thiểu |
 |---|---|---|
-| Delta buffer uses a fresh `BM25Okapi` per search | For delta > ~5K chunks, this adds noticeable overhead (each query builds a temporary `BM25Okapi`) | `BM25_REBUILD_BATCH_SIZE` default of 500 keeps the delta small; if it grows, the background rebuild collapses it |
-| Scores from main index and delta index are on different IDF scales | Merging raw BM25 scores from two different corpora is statistically imprecise | Use score normalisation (divide by max score per sub-index) before merging; or use RRF between the two sub-results rather than raw score merge |
-| Soft-deleted chunks stay in memory until rebuild completes | For mass deletes (e.g., deleting a 10K-chunk document), memory is not freed immediately | Background rebuild is triggered immediately on delete; memory reclaimed within seconds |
-| `_do_rebuild` holds ChromaDB under no lock — ChromaDB may return a snapshot mid-write | Possible: a concurrent write completes, but the rebuild fetches a slightly stale snapshot | Tolerated: the version mismatch check will discard any rebuild that raced with a write, and the write's own rebuild will produce a correct result |
-| Thread pool is process-global | Two collections can rebuild concurrently, but at most `BM25_REBUILD_WORKERS` rebuilds run in parallel | Increase `BM25_REBUILD_WORKERS` if rebuild queue backs up; monitored via `/ml/bm25/stats` |
-| No persistence across service restarts | Cold start always required per collection after restart | Acceptable for current scale; migrate to Tantivy-py if warm-restart is required |
-| LRU eviction drops the entire index | An evicted collection must cold-start on next search | Set `BM25_MAX_CACHED_COLLECTIONS` high enough to cover the expected active collection count |
+| Delta buffer sử dụng một `BM25Okapi` mới cho mỗi tìm kiếm | Với delta > ~5K chunk, điều này thêm chi phí đáng chú ý (mỗi truy vấn xây dựng một `BM25Okapi` tạm thời) | `BM25_REBUILD_BATCH_SIZE` mặc định là 500 giữ delta nhỏ; nếu tăng, xây dựng lại nền sẽ thu gọn nó |
+| Điểm từ index chính và index delta ở các thang đo IDF khác nhau | Hợp nhất điểm BM25 thô từ hai corpus khác nhau là không chính xác về mặt thống kê | Sử dụng chuẩn hóa điểm (chia cho điểm tối đa mỗi sub-index) trước khi hợp nhất; hoặc sử dụng RRF giữa hai sub-result thay vì hợp nhất điểm thô |
+| Các chunk bị soft-delete vẫn còn trong bộ nhớ cho đến khi xây dựng lại hoàn thành | Với xóa hàng loạt (ví dụ: xóa tài liệu 10K-chunk), bộ nhớ không được giải phóng ngay | Xây dựng lại nền được kích hoạt ngay khi xóa; bộ nhớ được thu hồi trong vài giây |
+| `_do_rebuild` giữ ChromaDB không có lock — ChromaDB có thể trả về snapshot giữa chừng khi ghi | Có thể xảy ra: một thao tác ghi đồng thời hoàn thành, nhưng xây dựng lại fetch snapshot hơi cũ | Được chấp nhận: kiểm tra version mismatch sẽ hủy bất kỳ lần xây dựng lại nào cạnh tranh với thao tác ghi, và lần xây dựng lại của thao tác ghi sẽ tạo ra kết quả đúng |
+| Thread pool là global theo tiến trình | Hai collection có thể xây dựng lại đồng thời, nhưng tối đa `BM25_REBUILD_WORKERS` lần xây dựng lại chạy song song | Tăng `BM25_REBUILD_WORKERS` nếu hàng đợi xây dựng lại bị tắc nghẽn; giám sát qua `/ml/bm25/stats` |
+| Không bền vững qua các lần khởi động lại dịch vụ | Khởi động nguội luôn cần thiết cho mỗi collection sau khi khởi động lại | Chấp nhận được cho quy mô hiện tại; di chuyển sang Tantivy-py nếu cần khởi động ấm |
+| LRU eviction xóa toàn bộ index | Một collection bị xóa phải khởi động nguội ở lần tìm kiếm tiếp theo | Đặt `BM25_MAX_CACHED_COLLECTIONS` đủ cao để bao phủ số lượng collection active dự kiến |

@@ -1,41 +1,41 @@
-# OpenRAG: Search Result Caching — Design Document
+# OpenRAG: Lưu Cache Kết Quả Tìm Kiếm — Tài Liệu Thiết Kế
 
-**Date**: 2026-03-26
-**Status**: Design Proposal
-**Target**: `OpenRAG.Api` (.NET 8, ASP.NET Core)
+**Ngày**: 2026-03-26
+**Trạng thái**: Đề Xuất Thiết Kế
+**Mục tiêu**: `OpenRAG.Api` (.NET 8, ASP.NET Core)
 
 ---
 
-## 1. Problem Statement
+## 1. Phát Biểu Vấn Đề
 
-Every call to `POST /api/search` triggers a chain of expensive ML operations:
+Mỗi lần gọi `POST /api/search` đều kích hoạt một chuỗi các thao tác ML tốn kém:
 
-| Step | Component | Latency |
+| Bước | Thành phần | Độ trễ |
 |---|---|---|
 | Query embedding | GPU inference (sentence-transformers) | 100–500 ms |
 | ChromaDB vector search | Disk/memory ANN index | 50–200 ms |
-| BM25 hybrid search (optional) | CPU, inverted index | 10–100 ms |
-| Cross-encoder reranking (optional) | GPU inference | 200–800 ms |
-| **Total** | | **360 ms – 1.6 s** |
+| BM25 hybrid search (tùy chọn) | CPU, inverted index | 10–100 ms |
+| Cross-encoder reranking (tùy chọn) | GPU inference | 200–800 ms |
+| **Tổng cộng** | | **360 ms – 1.6 s** |
 
-Repeated identical queries re-execute the entire pipeline. In a typical RAG application, the same questions are asked frequently (e.g., "What is the refund policy?"), especially in a multi-user environment. This wastes GPU cycles and increases response latency unnecessarily.
+Các truy vấn giống hệt nhau được lặp lại sẽ thực thi lại toàn bộ pipeline. Trong một ứng dụng RAG điển hình, cùng một câu hỏi được hỏi thường xuyên (ví dụ: "What is the refund policy?"), đặc biệt trong môi trường nhiều người dùng. Điều này lãng phí chu kỳ GPU và làm tăng độ trễ phản hồi một cách không cần thiết.
 
-`ChatService.cs` also calls `ml.SearchAsync()` for every chat turn, compounding the problem.
+`ChatService.cs` cũng gọi `ml.SearchAsync()` cho mỗi lượt chat, làm trầm trọng thêm vấn đề.
 
-### Expected Speedup
+### Tốc Độ Cải Thiện Dự Kiến
 
-| Scenario | Without cache | With cache (hit) |
+| Kịch bản | Không có cache | Có cache (cache hit) |
 |---|---|---|
 | Warm semantic search | ~350 ms | ~2 ms (memory) / ~5 ms (Redis) |
 | Warm reranker search | ~1.2 s | ~2 ms / ~5 ms |
-| Cache miss (first call) | ~1.2 s | ~1.2 s + ~1 ms write overhead |
-| Embedding reuse only | ~700 ms | ~300 ms (skips embed step) |
+| Cache miss (lần gọi đầu tiên) | ~1.2 s | ~1.2 s + ~1 ms chi phí ghi |
+| Chỉ tái sử dụng embedding | ~700 ms | ~300 ms (bỏ qua bước embed) |
 
-**Target**: >80% of repeated queries served from cache at <10 ms.
+**Mục tiêu**: >80% các truy vấn lặp lại được phục vụ từ cache trong <10 ms.
 
 ---
 
-## 2. Solution Architecture
+## 2. Kiến Trúc Giải Pháp
 
 ```
                         ┌──────────────────────────────────────────┐
@@ -87,20 +87,20 @@ Repeated identical queries re-execute the entire pipeline. In a typical RAG appl
 
 ---
 
-## 3. NuGet Packages
+## 3. Các Gói NuGet
 
-Add to `OpenRAG.Api/OpenRAG.Api.csproj`:
+Thêm vào `OpenRAG.Api/OpenRAG.Api.csproj`:
 
 ```xml
 <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="8.*" />
 <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="8.*" />
 ```
 
-No other third-party dependencies are required. `IDistributedCache` is the abstraction used throughout; `IMemoryCache` is used as a local fallback.
+Không cần thêm bất kỳ thư viện bên thứ ba nào khác. `IDistributedCache` là abstraction được sử dụng xuyên suốt; `IMemoryCache` được dùng làm fallback cục bộ.
 
 ---
 
-## 4. Configuration
+## 4. Cấu Hình
 
 ### 4.1 `appsettings.json`
 
@@ -136,7 +136,7 @@ No other third-party dependencies are required. `IDistributedCache` is the abstr
 }
 ```
 
-When `Cache:Redis:ConnectionString` is empty or missing, the system falls back to in-process `IMemoryCache`. No Redis server is required for local development.
+Khi `Cache:Redis:ConnectionString` để trống hoặc không được khai báo, hệ thống sẽ tự động chuyển sang sử dụng `IMemoryCache` trong tiến trình. Không cần Redis server cho môi trường phát triển cục bộ.
 
 ### 4.2 `CacheOptions.cs`
 
@@ -167,11 +167,11 @@ public sealed class RedisOptions
 
 ---
 
-## 5. Cache Key Strategy
+## 5. Chiến Lược Cache Key
 
 **File**: `OpenRAG.Api/Services/Cache/CacheKeyFactory.cs`
 
-The cache key must be stable regardless of query whitespace variations or JSON field ordering. A SHA-256 hash of a canonicalized JSON object is used as the key suffix. This produces a fixed-length 64-character hex string regardless of query length.
+Cache key phải ổn định bất kể sự khác biệt về khoảng trắng trong truy vấn hay thứ tự các trường JSON. Một hàm băm SHA-256 của đối tượng JSON đã được chuẩn hóa được dùng làm phần hậu tố của key. Điều này tạo ra một chuỗi hex có độ dài cố định 64 ký tự bất kể độ dài truy vấn.
 
 ```csharp
 using System.Security.Cryptography;
@@ -181,21 +181,21 @@ using System.Text.Json;
 namespace OpenRAG.Api.Services.Cache;
 
 /// <summary>
-/// Produces deterministic, collision-resistant cache keys for search parameters
-/// and embedding vectors.
+/// Tạo ra các cache key xác định và chống xung đột cho các tham số tìm kiếm
+/// và embedding vector.
 /// </summary>
 public static class CacheKeyFactory
 {
     private static readonly JsonSerializerOptions CanonicalJson = new()
     {
-        // Alphabetical property ordering ensures field-order independence.
-        // System.Text.Json does not guarantee alpha order by default,
-        // so we serialize a hand-ordered anonymous type.
+        // Sắp xếp thuộc tính theo thứ tự bảng chữ cái đảm bảo độc lập với thứ tự các trường.
+        // System.Text.Json không đảm bảo thứ tự alpha theo mặc định,
+        // vì vậy ta serialize một anonymous type đã sắp xếp thủ công.
         WriteIndented = false,
     };
 
     /// <summary>
-    /// Returns a key for the full search result:
+    /// Trả về key cho kết quả tìm kiếm đầy đủ:
     ///   search:{collection}:{sha256(normalizedQuery|topK|useReranker|searchMode)}
     /// </summary>
     public static string SearchKey(
@@ -205,12 +205,12 @@ public static class CacheKeyFactory
         bool useReranker,
         string searchMode)
     {
-        // Normalize: lowercase, collapse internal whitespace, trim edges.
+        // Chuẩn hóa: chuyển thành chữ thường, thu gọn khoảng trắng nội bộ, cắt hai đầu.
         var normalizedQuery = NormalizeText(query);
         var normalizedCollection = collection.Trim().ToLowerInvariant();
         var normalizedMode = searchMode.Trim().ToLowerInvariant();
 
-        // Canonical JSON with deterministic field order.
+        // JSON chuẩn hóa với thứ tự trường xác định.
         var payload = JsonSerializer.Serialize(new
         {
             collection = normalizedCollection,
@@ -225,9 +225,9 @@ public static class CacheKeyFactory
     }
 
     /// <summary>
-    /// Returns a key for a query embedding vector:
+    /// Trả về key cho embedding vector của một truy vấn:
     ///   emb:{sha256(normalizedQuery)}
-    /// Embeddings depend only on the query text — same text = same vector.
+    /// Embedding chỉ phụ thuộc vào văn bản truy vấn — cùng văn bản = cùng vector.
     /// </summary>
     public static string EmbeddingKey(string query)
     {
@@ -237,8 +237,8 @@ public static class CacheKeyFactory
     }
 
     /// <summary>
-    /// Returns the Redis set key that tracks all search cache keys for a collection.
-    /// Used to implement collection-scoped invalidation without SCAN.
+    /// Trả về Redis set key để theo dõi tất cả các search cache key của một collection.
+    /// Được dùng để thực hiện invalidation theo phạm vi collection mà không cần SCAN.
     /// </summary>
     public static string CollectionIndexKey(string collection) =>
         $"search-index:{collection.Trim().ToLowerInvariant()}";
@@ -257,19 +257,19 @@ public static class CacheKeyFactory
 }
 ```
 
-**Key format examples**:
+**Ví dụ định dạng key**:
 
-| Input | Key |
+| Đầu vào | Key |
 |---|---|
 | `"What is the refund policy?"`, collection=`documents`, topK=5, semantic | `search:documents:a3f9d2...` |
-| `"  What is the REFUND policy?  "` (same query, different whitespace/case) | `search:documents:a3f9d2...` (identical) |
-| Same query, `useReranker=true` | `search:documents:7bc1e4...` (different hash) |
+| `"  What is the REFUND policy?  "` (cùng truy vấn, khác khoảng trắng/hoa thường) | `search:documents:a3f9d2...` (giống hệt) |
+| Cùng truy vấn, `useReranker=true` | `search:documents:7bc1e4...` (hash khác) |
 
 ---
 
-## 6. Cache Abstraction Layer
+## 6. Lớp Trừu Tượng Cache
 
-Rather than scattering `IDistributedCache` calls across the codebase, all cache operations are centralized in a `SearchCacheService`. This isolates serialization logic and TTL policy in one place.
+Thay vì phân tán các lời gọi `IDistributedCache` trên toàn bộ codebase, tất cả các thao tác cache được tập trung trong một `SearchCacheService`. Điều này cô lập logic serialization và chính sách TTL ở một nơi duy nhất.
 
 **File**: `OpenRAG.Api/Services/Cache/SearchCacheService.cs`
 
@@ -284,8 +284,8 @@ using OpenRAG.Api.Models.Dto.Responses;
 namespace OpenRAG.Api.Services.Cache;
 
 /// <summary>
-/// Wraps IDistributedCache (Redis when configured, otherwise a no-op stub)
-/// and IMemoryCache (in-process fallback) for search result and embedding caching.
+/// Bọc IDistributedCache (Redis khi được cấu hình, ngược lại là no-op stub)
+/// và IMemoryCache (fallback trong tiến trình) để cache kết quả tìm kiếm và embedding.
 /// </summary>
 public class SearchCacheService(
     IDistributedCache? distributedCache,
@@ -300,11 +300,11 @@ public class SearchCacheService(
 
     private readonly CacheOptions _opts = options.Value;
 
-    // ── Search result cache ───────────────────────────────────────────────────
+    // ── Cache kết quả tìm kiếm ───────────────────────────────────────────────────
 
     public async Task<List<ChunkResult>?> GetSearchResultAsync(string cacheKey, CancellationToken ct = default)
     {
-        // 1. Try distributed cache (Redis)
+        // 1. Thử distributed cache (Redis)
         if (distributedCache is not null)
         {
             try
@@ -321,12 +321,12 @@ public class SearchCacheService(
             }
             catch (Exception ex)
             {
-                // Redis failure must not break the request — fall through to memory cache.
+                // Lỗi Redis không được làm hỏng request — tiếp tục xuống memory cache.
                 logger.LogWarning(ex, "[Cache] Redis GET failed for key={Key}, falling back to memory", cacheKey);
             }
         }
 
-        // 2. Try in-memory cache
+        // 2. Thử in-memory cache
         if (memoryCache.TryGetValue(cacheKey, out List<ChunkResult>? memResult))
         {
             logger.LogInformation(
@@ -345,10 +345,10 @@ public class SearchCacheService(
         List<ChunkResult> results,
         CancellationToken ct = default)
     {
-        // 1. Write to in-memory cache (always, acts as L1)
+        // 1. Ghi vào in-memory cache (luôn luôn, đóng vai trò L1)
         memoryCache.Set(cacheKey, results, _opts.SearchTtl);
 
-        // 2. Write to Redis (L2) and register key in the collection index
+        // 2. Ghi vào Redis (L2) và đăng ký key trong collection index
         if (distributedCache is not null)
         {
             try
@@ -360,8 +360,8 @@ public class SearchCacheService(
                 };
                 await distributedCache.SetAsync(cacheKey, bytes, distOpts, ct);
 
-                // Track this key in the collection's invalidation index.
-                // The index is itself a cached list of keys (JSON).
+                // Theo dõi key này trong invalidation index của collection.
+                // Index là một danh sách key được cache (JSON).
                 await AddKeyToCollectionIndexAsync(cacheKey, collection, ct);
 
                 logger.LogInformation(
@@ -375,7 +375,7 @@ public class SearchCacheService(
         }
     }
 
-    // ── Embedding cache ───────────────────────────────────────────────────────
+    // ── Cache embedding ───────────────────────────────────────────────────────
 
     public async Task<float[]?> GetEmbeddingAsync(string embKey, CancellationToken ct = default)
     {
@@ -428,26 +428,26 @@ public class SearchCacheService(
         }
     }
 
-    // ── Collection-scoped invalidation ────────────────────────────────────────
+    // ── Invalidation theo phạm vi collection ────────────────────────────────────────────
 
     /// <summary>
-    /// Invalidates all cached search results for a given collection.
-    /// Called by DocumentService after index or delete operations.
+    /// Xóa toàn bộ kết quả tìm kiếm đã cache cho một collection nhất định.
+    /// Được gọi bởi DocumentService sau các thao tác index hoặc delete.
     ///
-    /// Strategy: maintain a Redis list (JSON) of all search cache keys that
-    /// belong to this collection. On invalidation, iterate and delete each key.
+    /// Chiến lược: duy trì một Redis list (JSON) chứa tất cả search cache key
+    /// thuộc về collection này. Khi invalidate, duyệt và xóa từng key.
     ///
-    /// IDistributedCache does not support pattern-based removal (SCAN + DEL),
-    /// so this collection index is the portable alternative that works with
-    /// any IDistributedCache backend (Redis, SQL Server, etc.).
+    /// IDistributedCache không hỗ trợ xóa theo pattern (SCAN + DEL),
+    /// nên collection index này là phương án thay thế khả chuyển hoạt động với
+    /// mọi backend IDistributedCache (Redis, SQL Server, v.v.).
     /// </summary>
     public async Task InvalidateCollectionAsync(string collection, CancellationToken ct = default)
     {
         var indexKey = CacheKeyFactory.CollectionIndexKey(collection);
 
-        // Always clear in-memory entries by tag (in .NET 9 use cache tags;
-        // for .NET 8 we must track manually — clear all memory cache entries
-        // for this collection by removing tracked keys).
+        // Luôn xóa các entry in-memory theo tag (trong .NET 9 dùng cache tags;
+        // với .NET 8 phải theo dõi thủ công — xóa tất cả entry memory cache
+        // của collection này bằng cách xóa các key đã theo dõi).
         if (memoryCache.TryGetValue(indexKey, out List<string>? trackedKeys) && trackedKeys is not null)
         {
             foreach (var key in trackedKeys)
@@ -463,7 +463,7 @@ public class SearchCacheService(
 
         try
         {
-            // Retrieve the index of all keys belonging to this collection.
+            // Lấy index chứa tất cả key thuộc collection này.
             var indexBytes = await distributedCache.GetAsync(indexKey, ct);
             if (indexBytes is null)
             {
@@ -473,11 +473,11 @@ public class SearchCacheService(
 
             var keys = JsonSerializer.Deserialize<List<string>>(indexBytes, JsonOpts) ?? [];
 
-            // Delete each tracked search result key.
+            // Xóa từng search result key đã được theo dõi.
             var tasks = keys.Select(k => distributedCache.RemoveAsync(k, ct));
             await Task.WhenAll(tasks);
 
-            // Remove the index itself.
+            // Xóa chính index.
             await distributedCache.RemoveAsync(indexKey, ct);
 
             logger.LogInformation(
@@ -491,7 +491,7 @@ public class SearchCacheService(
         }
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
+    // ── Các hàm hỗ trợ nội bộ ───────────────────────────────────────────────────────
 
     private async Task AddKeyToCollectionIndexAsync(
         string cacheKey,
@@ -500,7 +500,7 @@ public class SearchCacheService(
     {
         var indexKey = CacheKeyFactory.CollectionIndexKey(collection);
 
-        // In-memory index tracking
+        // Theo dõi index trong memory
         var memKeys = memoryCache.GetOrCreate(indexKey, e =>
         {
             e.SlidingExpiration = TimeSpan.FromDays(1);
@@ -508,7 +508,7 @@ public class SearchCacheService(
         })!;
         if (!memKeys.Contains(cacheKey)) memKeys.Add(cacheKey);
 
-        // Redis index tracking
+        // Theo dõi index trong Redis
         if (distributedCache is null) return;
         try
         {
@@ -521,7 +521,7 @@ public class SearchCacheService(
             {
                 keys.Add(cacheKey);
                 var indexBytes = JsonSerializer.SerializeToUtf8Bytes(keys, JsonOpts);
-                // Index TTL is longer than any individual entry — 48h.
+                // TTL của index dài hơn bất kỳ entry riêng lẻ nào — 48h.
                 await distributedCache.SetAsync(indexKey, indexBytes,
                     new DistributedCacheEntryOptions
                     {
@@ -539,9 +539,9 @@ public class SearchCacheService(
 
 ---
 
-## 7. Program.cs — Service Registration with Redis/Memory Fallback
+## 7. Program.cs — Đăng Ký Service với Redis/Memory Fallback
 
-**File**: `OpenRAG.Api/Program.cs` (complete updated version)
+**File**: `OpenRAG.Api/Program.cs` (phiên bản cập nhật đầy đủ)
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -555,17 +555,17 @@ using OpenRAG.Api.Services.Chunking;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ── Cache configuration ───────────────────────────────────────────────────────
+// ── Cấu hình cache ───────────────────────────────────────────────────────────
 var cacheSection = builder.Configuration.GetSection(CacheOptions.SectionName);
 builder.Services.Configure<CacheOptions>(cacheSection);
 var cacheOpts = cacheSection.Get<CacheOptions>() ?? new CacheOptions();
 
-// Always register in-memory cache as the L1 / standalone fallback.
+// Luôn đăng ký in-memory cache làm L1 / standalone fallback.
 builder.Services.AddMemoryCache();
 
-// Register Redis (L2) only when a connection string is provided.
-// When Redis is absent, IDistributedCache is not registered at all — the
-// SearchCacheService handles a null IDistributedCache gracefully.
+// Chỉ đăng ký Redis (L2) khi có connection string.
+// Khi Redis vắng mặt, IDistributedCache không được đăng ký —
+// SearchCacheService xử lý IDistributedCache null một cách graceful.
 var redisConnectionString = cacheOpts.Redis.ConnectionString;
 if (!string.IsNullOrWhiteSpace(redisConnectionString))
 {
@@ -576,11 +576,11 @@ if (!string.IsNullOrWhiteSpace(redisConnectionString))
     });
     builder.Logging.AddFilter("Microsoft.Extensions.Caching.StackExchangeRedis", LogLevel.Warning);
 }
-// Note: do NOT call AddDistributedMemoryCache() as a fallback here.
-// We intentionally leave IDistributedCache unregistered when Redis is absent.
-// SearchCacheService receives IDistributedCache? (nullable) and handles it.
-// If you need IDistributedCache to always be resolvable (e.g., for third-party
-// middleware), uncomment the next block instead:
+// Lưu ý: KHÔNG gọi AddDistributedMemoryCache() làm fallback ở đây.
+// Chúng ta cố ý để IDistributedCache không đăng ký khi Redis vắng mặt.
+// SearchCacheService nhận IDistributedCache? (nullable) và xử lý nó.
+// Nếu bạn cần IDistributedCache luôn có thể resolve được (ví dụ: cho middleware bên thứ ba),
+// hãy bỏ comment khối tiếp theo thay thế:
 // else { builder.Services.AddDistributedMemoryCache(); }
 
 builder.Services.AddSingleton<SearchCacheService>();
@@ -597,7 +597,7 @@ builder.Services.AddHttpClient<MlClient>(client =>
     client.Timeout = TimeSpan.FromSeconds(300);
 });
 
-// ── LLM client (optional) ────────────────────────────────────────────────────
+// ── LLM client (tùy chọn) ────────────────────────────────────────────────────
 var llmBaseUrl = builder.Configuration["Llm:BaseUrl"];
 builder.Services.AddHttpClient<LlmClient>(client =>
 {
@@ -628,7 +628,7 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
 
 var app = builder.Build();
 
-// ── Migrate DB on startup ─────────────────────────────────────────────────────
+// ── Migrate DB khi khởi động ─────────────────────────────────────────────────
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -645,13 +645,13 @@ app.MapFallbackToFile("index.html");
 app.Run();
 ```
 
-**Important note on nullable `IDistributedCache`**: ASP.NET Core's DI container will inject `null` for an unregistered optional service only when the constructor parameter is declared as `T?` (nullable reference type). The `SearchCacheService` constructor uses `IDistributedCache? distributedCache` — this is intentional.
+**Lưu ý quan trọng về `IDistributedCache` nullable**: Container DI của ASP.NET Core sẽ inject `null` cho một service tùy chọn chưa được đăng ký chỉ khi tham số constructor được khai báo là `T?` (nullable reference type). Constructor của `SearchCacheService` dùng `IDistributedCache? distributedCache` — điều này là có chủ đích.
 
 ---
 
-## 8. SearchController.cs — Cache Bypass + Cache-Aware Search
+## 8. SearchController.cs — Cache Bypass + Tìm Kiếm Với Cache
 
-**File**: `OpenRAG.Api/Controllers/SearchController.cs` (complete updated version)
+**File**: `OpenRAG.Api/Controllers/SearchController.cs` (phiên bản cập nhật đầy đủ)
 
 ```csharp
 using Microsoft.AspNetCore.Mvc;
@@ -694,13 +694,13 @@ public class SearchController(
             if (cached is not null)
             {
                 results = cached;
-                // Surface cache status to the client for debugging.
+                // Hiển thị trạng thái cache cho client để debug.
                 Response.Headers["X-Cache"] = "HIT";
             }
             else
             {
                 results = await ml.SearchAsync(req.Query, req.Collection, req.TopK, req.UseReranker, req.SearchMode, ct);
-                // Fire-and-forget cache write — do not delay the response.
+                // Ghi cache theo kiểu fire-and-forget — không trì hoãn phản hồi.
                 _ = cache.SetSearchResultAsync(cacheKey, req.Collection, results, CancellationToken.None);
                 Response.Headers["X-Cache"] = "MISS";
             }
@@ -717,27 +717,27 @@ public class SearchController(
 }
 ```
 
-**`?noCache=true` usage**:
+**Cách dùng `?noCache=true`**:
 ```
 POST /api/search?noCache=true
 { "query": "refund policy", "collection": "documents" }
 ```
 
-The `X-Cache: HIT` / `X-Cache: MISS` response header lets developers inspect cache behavior without log access.
+Response header `X-Cache: HIT` / `X-Cache: MISS` cho phép developer kiểm tra hành vi cache mà không cần truy cập log.
 
 ---
 
-## 9. Embedding Cache — MlClient.cs Integration
+## 9. Cache Embedding — Tích Hợp MlClient.cs
 
-The current `MlClient.SearchAsync` sends the entire search pipeline to the Python service in a single call. The embedding cache makes most sense either:
+`MlClient.SearchAsync` hiện tại gửi toàn bộ pipeline tìm kiếm đến Python service trong một lần gọi duy nhất. Cache embedding có ý nghĩa nhất trong một trong hai trường hợp:
 
-**Option A (Recommended)**: Cache at the .NET boundary — wrap `MlClient` calls in a cache-aware service before results are sent to `SearchController`. Since the ML service currently bundles embed + search atomically, this means caching the full result (already done above). The embedding cache described below is relevant when the ML service is split into separate `/embed` and `/search` endpoints in the future.
+**Option A (Khuyến nghị)**: Cache tại ranh giới .NET — bọc các lời gọi `MlClient` trong một service có nhận thức về cache trước khi kết quả được gửi đến `SearchController`. Vì ML service hiện tại gộp embed + search vào một khối nguyên tử, điều này có nghĩa là cache toàn bộ kết quả (đã thực hiện ở trên). Cache embedding mô tả bên dưới sẽ phù hợp khi ML service được tách thành các endpoint `/embed` và `/search` riêng biệt trong tương lai.
 
-**Option B**: Add a dedicated `/ml/embed` endpoint to the Python service and cache the resulting vector in .NET. This is the most impactful approach if the same query is searched with different `topK` or `searchMode` values.
+**Option B**: Thêm một endpoint `/ml/embed` chuyên dụng vào Python service và cache embedding vector kết quả trong .NET. Đây là phương án có tác động lớn nhất nếu cùng một truy vấn được tìm kiếm với các giá trị `topK` hoặc `searchMode` khác nhau.
 
-For Option B — inject `SearchCacheService` into `MlClient`:
+Với Option B — inject `SearchCacheService` vào `MlClient`:
 
-**File**: `OpenRAG.Api/Services/MlClient.cs` (embedding cache extension)
+**File**: `OpenRAG.Api/Services/MlClient.cs` (phần mở rộng embedding cache)
 
 ```csharp
 using System.Net.Http.Json;
@@ -768,15 +768,15 @@ public class MlClient(
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
     };
 
-    // ── Embedding with cache ──────────────────────────────────────────────────
+    // ── Embedding với cache ──────────────────────────────────────────────────
 
     /// <summary>
-    /// Embeds a query, checking the embedding cache first.
-    /// A 24-hour TTL is appropriate: embeddings are deterministic for fixed
-    /// model weights, so the vector for "refund policy" never changes unless
-    /// the embedding model is updated.
+    /// Embed một truy vấn, kiểm tra embedding cache trước.
+    /// TTL 24 giờ là phù hợp: embedding là xác định cho trọng số model cố định,
+    /// nên vector cho "refund policy" không bao giờ thay đổi trừ khi
+    /// embedding model được cập nhật.
     ///
-    /// Requires a new /ml/embed endpoint on the Python ML service.
+    /// Yêu cầu một endpoint /ml/embed mới trên Python ML service.
     /// </summary>
     public async Task<float[]> EmbedQueryAsync(string query, CancellationToken ct = default)
     {
@@ -793,13 +793,13 @@ public class MlClient(
         var result = await response.Content.ReadFromJsonAsync<MlEmbedResponse>(JsonOpts, ct)
             ?? throw new InvalidOperationException("Empty embed response");
 
-        // Cache asynchronously — do not block the request path.
+        // Cache bất đồng bộ — không chặn đường dẫn request.
         _ = cache.SetEmbeddingAsync(embKey, result.Embedding, CancellationToken.None);
 
         return result.Embedding;
     }
 
-    // ── Existing methods (unchanged) ──────────────────────────────────────────
+    // ── Các method hiện có (không thay đổi) ──────────────────────────────────────────
 
     public async Task<string> ConvertFileAsync(Stream fileStream, string filename, CancellationToken ct = default)
     {
@@ -887,11 +887,11 @@ public class MlClient(
 
 ---
 
-## 10. Cache Invalidation — DocumentService.cs
+## 10. Invalidation Cache — DocumentService.cs
 
-**File**: `OpenRAG.Api/Services/DocumentService.cs` (complete updated version)
+**File**: `OpenRAG.Api/Services/DocumentService.cs` (phiên bản cập nhật đầy đủ)
 
-Cache invalidation is called after every successful index or delete operation. The collection-level granularity is intentional: it is conservative (may evict still-valid results) but correct. Fine-grained document-level invalidation is not feasible because a new document changes the ranking of all queries against its collection.
+Invalidation cache được gọi sau mỗi thao tác index hoặc delete thành công. Mức độ chi tiết theo collection là có chủ đích: nó bảo thủ (có thể loại bỏ các kết quả còn hợp lệ) nhưng chính xác. Invalidation chi tiết theo từng tài liệu không khả thi vì một tài liệu mới thay đổi thứ hạng của tất cả các truy vấn trên collection của nó.
 
 ```csharp
 using Microsoft.AspNetCore.SignalR;
@@ -968,8 +968,8 @@ public class DocumentService(
             await db.SaveChangesAsync(ct);
             ReportProgress(docIdStr, "done", 100);
 
-            // Invalidate cached search results for this collection.
-            // New document content changes rankings — stale results must be evicted.
+            // Xóa cache kết quả tìm kiếm cho collection này.
+            // Nội dung tài liệu mới thay đổi thứ hạng — các kết quả cũ phải bị loại bỏ.
             await cache.InvalidateCollectionAsync(collection, ct);
             logger.LogInformation(
                 "[Cache] Invalidated collection={Collection} after indexing '{Filename}'",
@@ -1031,7 +1031,7 @@ public class DocumentService(
             await db.SaveChangesAsync(ct);
             ReportProgress(docIdStr, "done", 100);
 
-            // Invalidate cached search results for this collection.
+            // Xóa cache kết quả tìm kiếm cho collection này.
             await cache.InvalidateCollectionAsync(collection, ct);
             logger.LogInformation(
                 "[Cache] Invalidated collection={Collection} after ingesting text '{Title}'",
@@ -1080,7 +1080,7 @@ public class DocumentService(
         db.Documents.Remove(doc);
         await db.SaveChangesAsync(ct);
 
-        // Invalidate cached search results for this collection.
+        // Xóa cache kết quả tìm kiếm cho collection này.
         await cache.InvalidateCollectionAsync(collection, ct);
         logger.LogInformation(
             "[Cache] Invalidated collection={Collection} after deleting document={DocumentId}",
@@ -1105,30 +1105,30 @@ public class DocumentService(
 
 ---
 
-## 11. TTL Strategy
+## 11. Chiến Lược TTL
 
-| Cache type | Key prefix | TTL | Rationale |
+| Loại cache | Tiền tố key | TTL | Lý do |
 |---|---|---|---|
-| Search results | `search:{collection}:{hash}` | **5 minutes** | Content can change on index/delete; short TTL limits staleness |
-| Query embeddings | `emb:{hash}` | **24 hours** | Deterministic for fixed model weights; changes only on model upgrade |
-| Collection key index | `search-index:{collection}` | **48 hours** | Must outlive the search results it tracks |
-| Collection metadata | `meta:{collection}:{hash}` | **1 minute** | Rapid refresh; applies to listing/count endpoints |
+| Kết quả tìm kiếm | `search:{collection}:{hash}` | **5 phút** | Nội dung có thể thay đổi khi index/delete; TTL ngắn giới hạn dữ liệu cũ |
+| Query embedding | `emb:{hash}` | **24 giờ** | Xác định với trọng số model cố định; chỉ thay đổi khi nâng cấp model |
+| Collection key index | `search-index:{collection}` | **48 giờ** | Phải tồn tại lâu hơn các kết quả tìm kiếm mà nó theo dõi |
+| Collection metadata | `meta:{collection}:{hash}` | **1 phút** | Làm mới nhanh; áp dụng cho các endpoint listing/count |
 
-TTL is fully configurable via `appsettings.json` (see section 4). The values above are defaults baked into `CacheOptions`.
+TTL hoàn toàn có thể cấu hình qua `appsettings.json` (xem mục 4). Các giá trị trên là mặc định được baked vào `CacheOptions`.
 
-**On embedding model upgrade**: when the embedding model is swapped, all 24-hour embedding cache entries become stale. Mitigate this by:
-1. Flushing the Redis cache with `redis-cli FLUSHDB` during the upgrade rollout, or
-2. Including the model name in the embedding cache key: `emb:{modelName}:{hash}`.
+**Khi nâng cấp embedding model**: khi embedding model được thay thế, tất cả các entry embedding cache 24 giờ trở nên cũ. Để giảm thiểu điều này:
+1. Flush Redis cache bằng `redis-cli FLUSHDB` trong quá trình triển khai nâng cấp, hoặc
+2. Thêm tên model vào embedding cache key: `emb:{modelName}:{hash}`.
 
-Option 2 is more robust. The model name can be fetched from the `/ml/health` endpoint at startup and stored as a singleton configuration value.
+Option 2 bền vững hơn. Tên model có thể được lấy từ endpoint `/ml/health` khi khởi động và lưu trữ dưới dạng giá trị cấu hình singleton.
 
 ---
 
-## 12. Metrics and Logging
+## 12. Metrics và Logging
 
-The `SearchCacheService` already emits structured log messages at `Information` level for every HIT/MISS/SET/invalidation event. These are sufficient for development and production monitoring via a log aggregator (Seq, Datadog, etc.).
+`SearchCacheService` đã phát ra các log message có cấu trúc ở cấp độ `Information` cho mỗi sự kiện HIT/MISS/SET/invalidation. Điều này đủ để giám sát phát triển và sản xuất qua một log aggregator (Seq, Datadog, v.v.).
 
-For a richer metrics story, add OpenTelemetry counters as shown below. These slots can be wired to a future `builder.Services.AddOpenTelemetry()` call without changing any other code.
+Để có câu chuyện metrics phong phú hơn, hãy thêm các counter OpenTelemetry như bên dưới. Các slot này có thể được kết nối với một lời gọi `builder.Services.AddOpenTelemetry()` trong tương lai mà không cần thay đổi bất kỳ code nào khác.
 
 **File**: `OpenRAG.Api/Services/Cache/CacheMetrics.cs`
 
@@ -1138,8 +1138,8 @@ using System.Diagnostics.Metrics;
 namespace OpenRAG.Api.Services.Cache;
 
 /// <summary>
-/// Instruments cache activity for OpenTelemetry or any IMeterFactory consumer.
-/// Register as a singleton. Metrics are no-ops until an IMeterListener is attached.
+/// Đo lường hoạt động cache cho OpenTelemetry hoặc bất kỳ consumer IMeterFactory nào.
+/// Đăng ký dưới dạng singleton. Metrics là no-op cho đến khi một IMeterListener được gắn vào.
 /// </summary>
 public sealed class CacheMetrics : IDisposable
 {
@@ -1165,15 +1165,15 @@ public sealed class CacheMetrics : IDisposable
 }
 ```
 
-Register in `Program.cs`:
+Đăng ký trong `Program.cs`:
 
 ```csharp
 builder.Services.AddSingleton<CacheMetrics>();
 ```
 
-Then in `SearchCacheService`, inject `CacheMetrics` and call `metrics.SearchHits.Add(1)` / `metrics.SearchMisses.Add(1)` instead of (or in addition to) the `ILogger` calls. Until an OpenTelemetry exporter is wired up, the counters record into an in-process listener with zero overhead.
+Sau đó trong `SearchCacheService`, inject `CacheMetrics` và gọi `metrics.SearchHits.Add(1)` / `metrics.SearchMisses.Add(1)` thay thế (hoặc bổ sung) các lời gọi `ILogger`. Cho đến khi một OpenTelemetry exporter được kết nối, các counter ghi vào một in-process listener với chi phí bằng không.
 
-**Sample log output** (structured JSON via `appsettings.json` + Serilog/default provider):
+**Ví dụ đầu ra log** (structured JSON qua `appsettings.json` + Serilog/default provider):
 
 ```
 [INF] [Cache] MISS key=search:documents:a3f9d2c1...
@@ -1182,7 +1182,7 @@ Then in `SearchCacheService`, inject `CacheMetrics` and call `metrics.SearchHits
 [INF] [Cache] Invalidated 12 Redis entries for collection=documents
 ```
 
-**Hit rate calculation** (can be computed from log aggregation):
+**Tính toán hit rate** (có thể tính từ log aggregation):
 
 ```
 hit_rate = SearchHits / (SearchHits + SearchMisses)
@@ -1192,7 +1192,7 @@ hit_rate = SearchHits / (SearchHits + SearchMisses)
 
 ## 13. Docker Compose
 
-No `docker-compose.yml` exists in the repository. The following file creates a complete local development stack including the Redis service.
+Không có file `docker-compose.yml` nào trong repository. File sau đây tạo ra một stack phát triển cục bộ hoàn chỉnh bao gồm Redis service.
 
 **File**: `docker-compose.yml` (project root: `d:/Works/trgiangvp3/open-rag/`)
 
@@ -1254,7 +1254,7 @@ services:
       ml-service:
         condition: service_started
 
-  # ── Vue frontend (dev mode with Vite) ────────────────────────────────────────
+  # ── Vue frontend (chế độ dev với Vite) ────────────────────────────────────────
   frontend:
     build:
       context: ./frontend
@@ -1271,81 +1271,82 @@ volumes:
   sqlite_data:
 ```
 
-**Running locally without Docker**: leave `Cache:Redis:ConnectionString` empty in `appsettings.json` — the system degrades gracefully to in-process memory cache.
+**Chạy cục bộ không có Docker**: để trống `Cache:Redis:ConnectionString` trong `appsettings.json` — hệ thống tự động fallback xuống in-process memory cache một cách graceful.
 
 ---
 
-## 14. Trade-offs
+## 14. Đánh Đổi
 
-### 14.1 Consistency vs Performance
+### 14.1 Tính Nhất Quán vs Hiệu Năng
 
-| Trade-off | Impact | Mitigation |
+| Đánh đổi | Tác động | Giảm thiểu |
 |---|---|---|
-| Stale search results during 5-minute TTL | Users may not see newly indexed docs immediately | Explicitly invalidate on index/delete (already designed above) |
-| Memory cache L1 is per-instance | In a multi-instance deployment, each pod has a cold memory cache | Redis (L2) provides the shared, warm cache across all instances |
-| Collection-level invalidation is over-broad | Adding one doc invalidates all queries for that collection | Acceptable; document indexing is infrequent compared to search |
-| Embedding model upgrade makes emb cache stale | Wrong vectors returned for 24h | Flush Redis on deploy, or include model version in key |
-| High-cardinality queries never cache | Each unique query is a cache miss | Expected; TTL cleanup prevents unbounded growth |
+| Kết quả tìm kiếm cũ trong TTL 5 phút | Người dùng có thể không thấy tài liệu mới index ngay | Invalidate rõ ràng khi index/delete (đã thiết kế ở trên) |
+| Memory cache L1 là per-instance | Trong triển khai nhiều instance, mỗi pod có memory cache lạnh | Redis (L2) cung cấp cache dùng chung, đã khởi động cho tất cả instance |
+| Invalidation theo collection là quá rộng | Thêm một tài liệu invalidate tất cả query cho collection đó | Chấp nhận được; việc index tài liệu ít thường xuyên hơn tìm kiếm |
+| Nâng cấp embedding model làm emb cache cũ | Vector sai được trả về trong 24h | Flush Redis khi deploy, hoặc thêm phiên bản model vào key |
+| Các truy vấn có cardinality cao không bao giờ cache | Mỗi truy vấn độc nhất là một cache miss | Dự kiến; TTL cleanup ngăn tăng trưởng không giới hạn |
 
-### 14.2 Memory Sizing
+### 14.2 Định Cỡ Bộ Nhớ
 
-With a 5-minute TTL and a typical `List<ChunkResult>` of 5 items at ~2 KB JSON each (~10 KB per entry):
+Với TTL 5 phút và một `List<ChunkResult>` điển hình gồm 5 mục ở ~2 KB JSON mỗi mục (~10 KB mỗi entry):
 
-- 1,000 unique queries/day → ~10 MB Redis memory
-- 10,000 unique queries/day → ~100 MB Redis memory
+- 1.000 truy vấn độc nhất/ngày → ~10 MB Redis memory
+- 10.000 truy vấn độc nhất/ngày → ~100 MB Redis memory
 
-Redis `maxmemory-policy allkeys-lru` is recommended so Redis self-evicts LRU entries under memory pressure without crashing.
+Redis `maxmemory-policy allkeys-lru` được khuyến nghị để Redis tự evict các entry LRU dưới áp lực bộ nhớ mà không bị crash.
 
-Add to `docker-compose.yml` Redis command:
+Thêm vào lệnh Redis trong `docker-compose.yml`:
+
 ```yaml
 command: redis-server --save 60 1 --loglevel warning --maxmemory 256mb --maxmemory-policy allkeys-lru
 ```
 
-### 14.3 In-Memory Cache vs Redis (When to Use Each)
+### 14.3 In-Memory Cache vs Redis (Khi Nào Dùng Cái Nào)
 
-| Scenario | Recommendation |
+| Kịch bản | Khuyến nghị |
 |---|---|
-| Single-process development / testing | Memory cache only (Redis not needed) |
-| Single-process production (low traffic) | Memory cache only (simpler ops) |
-| Multi-instance production (load balanced) | Redis required for cross-instance cache sharing |
-| High availability required | Redis Sentinel or Redis Cluster |
+| Phát triển/kiểm thử single-process | Chỉ memory cache (không cần Redis) |
+| Sản xuất single-process (lưu lượng thấp) | Chỉ memory cache (vận hành đơn giản hơn) |
+| Sản xuất nhiều instance (load balanced) | Redis bắt buộc để chia sẻ cache giữa các instance |
+| Yêu cầu high availability | Redis Sentinel hoặc Redis Cluster |
 
-### 14.4 Alternative: Cache in the Python ML Service
+### 14.4 Phương Án Thay Thế: Cache trong Python ML Service
 
-The ML service (`ml_service/main_ml.py`) could also cache results internally using `functools.lru_cache` or Redis. This would be transparent to the .NET layer. However:
+ML service (`ml_service/main_ml.py`) cũng có thể cache kết quả nội bộ bằng `functools.lru_cache` hoặc Redis. Điều này sẽ trong suốt với lớp .NET. Tuy nhiên:
 
-- Python-side caching does not benefit from the L1 memory cache in .NET.
-- Python-side invalidation on document changes requires an additional API call or message queue event.
-- The .NET layer has better observability integration (structured logs, metrics).
+- Cache phía Python không hưởng lợi từ L1 memory cache trong .NET.
+- Invalidation phía Python khi thay đổi tài liệu yêu cầu một lời gọi API bổ sung hoặc message queue event.
+- Lớp .NET có khả năng tích hợp observability tốt hơn (structured logs, metrics).
 
-The .NET-side cache designed here is preferred.
+Cache phía .NET được thiết kế ở đây là phương án ưu tiên.
 
-### 14.5 The Collection Index Approach vs Redis SCAN
+### 14.5 Phương Pháp Collection Index vs Redis SCAN
 
-`IDistributedCache` does not expose `SCAN` or `KEYS` commands. Two approaches exist:
+`IDistributedCache` không expose các lệnh `SCAN` hoặc `KEYS`. Có hai cách tiếp cận:
 
-| Approach | Pros | Cons |
+| Cách tiếp cận | Ưu điểm | Nhược điểm |
 |---|---|---|
-| **Collection index list** (designed here) | Works with any `IDistributedCache` backend | Slightly more complex; index can grow unbounded if not pruned |
-| **StackExchange.Redis directly** (bypass `IDistributedCache`) | Full `SCAN + DEL` support | Couples the code to Redis; breaks if the backing store changes |
+| **Collection index list** (được thiết kế ở đây) | Hoạt động với bất kỳ backend `IDistributedCache` nào | Phức tạp hơn một chút; index có thể tăng trưởng không giới hạn nếu không được pruned |
+| **StackExchange.Redis trực tiếp** (bypass `IDistributedCache`) | Hỗ trợ đầy đủ `SCAN + DEL` | Kết nối code với Redis; bị hỏng nếu backing store thay đổi |
 
-The collection index approach is chosen for portability. For large-scale deployments with thousands of unique queries per collection, add a periodic cleanup job that prunes expired keys from the index.
+Phương pháp collection index được chọn vì tính khả chuyển. Với các triển khai quy mô lớn có hàng nghìn truy vấn độc nhất mỗi collection, hãy thêm một periodic cleanup job để loại bỏ các key hết hạn khỏi index.
 
 ---
 
-## 15. Implementation Checklist
+## 15. Danh Sách Kiểm Tra Triển Khai
 
-- [ ] Add NuGet packages: `Microsoft.Extensions.Caching.StackExchangeRedis`, `Microsoft.Extensions.Caching.Memory`
-- [ ] Create `OpenRAG.Api/Configuration/CacheOptions.cs`
-- [ ] Create `OpenRAG.Api/Services/Cache/CacheKeyFactory.cs`
-- [ ] Create `OpenRAG.Api/Services/Cache/SearchCacheService.cs`
-- [ ] Create `OpenRAG.Api/Services/Cache/CacheMetrics.cs`
-- [ ] Update `OpenRAG.Api/Program.cs` with cache service registration
-- [ ] Update `OpenRAG.Api/Controllers/SearchController.cs` with cache + `?noCache` bypass
-- [ ] Update `OpenRAG.Api/Services/DocumentService.cs` with invalidation calls
-- [ ] Update `OpenRAG.Api/Services/MlClient.cs` with optional embedding cache (requires `/ml/embed` on ML service)
-- [ ] Update `OpenRAG.Api/appsettings.json` with `Cache` section
-- [ ] Create `docker-compose.yml` at repo root
-- [ ] Add `--maxmemory` and `allkeys-lru` to Redis in docker-compose
-- [ ] (Optional) Add `/ml/embed` endpoint to `ml_service/main_ml.py`
-- [ ] (Optional) Wire `CacheMetrics` to OpenTelemetry exporter in `Program.cs`
+- [ ] Thêm NuGet packages: `Microsoft.Extensions.Caching.StackExchangeRedis`, `Microsoft.Extensions.Caching.Memory`
+- [ ] Tạo `OpenRAG.Api/Configuration/CacheOptions.cs`
+- [ ] Tạo `OpenRAG.Api/Services/Cache/CacheKeyFactory.cs`
+- [ ] Tạo `OpenRAG.Api/Services/Cache/SearchCacheService.cs`
+- [ ] Tạo `OpenRAG.Api/Services/Cache/CacheMetrics.cs`
+- [ ] Cập nhật `OpenRAG.Api/Program.cs` với đăng ký cache service
+- [ ] Cập nhật `OpenRAG.Api/Controllers/SearchController.cs` với cache + bypass `?noCache`
+- [ ] Cập nhật `OpenRAG.Api/Services/DocumentService.cs` với các lời gọi invalidation
+- [ ] Cập nhật `OpenRAG.Api/Services/MlClient.cs` với embedding cache tùy chọn (yêu cầu `/ml/embed` trên ML service)
+- [ ] Cập nhật `OpenRAG.Api/appsettings.json` với mục `Cache`
+- [ ] Tạo `docker-compose.yml` tại repo root
+- [ ] Thêm `--maxmemory` và `allkeys-lru` vào Redis trong docker-compose
+- [ ] (Tùy chọn) Thêm endpoint `/ml/embed` vào `ml_service/main_ml.py`
+- [ ] (Tùy chọn) Kết nối `CacheMetrics` với OpenTelemetry exporter trong `Program.cs`

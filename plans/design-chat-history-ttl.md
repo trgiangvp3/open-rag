@@ -1,4 +1,4 @@
-# Design: Bounded Chat History & Session TTL
+# Thiết kế: Giới hạn Lịch sử Chat & TTL Phiên làm việc
 
 **File**: `plans/design-chat-history-ttl.md`
 **Status**: Design proposal — not yet implemented
@@ -6,39 +6,39 @@
 
 ---
 
-## 1. Problem Statement
+## 1. Phát biểu vấn đề
 
-`ChatService.ChatAsync()` loads every historical message for a session via EF Core's eager-load (`.Include(s => s.Messages)`). There is no cleanup, no cap, and no pagination. This produces four compounding failure modes:
+`ChatService.ChatAsync()` tải toàn bộ lịch sử tin nhắn của một phiên thông qua eager-load của EF Core (`.Include(s => s.Messages)`). Không có cơ chế dọn dẹp, không có giới hạn, và không có phân trang. Điều này dẫn đến bốn chế độ lỗi tích lũy:
 
-| Failure | Root cause | Observed symptom |
+| Lỗi | Nguyên nhân gốc rễ | Triệu chứng quan sát được |
 |---|---|---|
-| DB grows unbounded | No session or message TTL | SQLite file size grows forever |
-| Slow session load | Full table scan over all messages for a session | Request latency increases with session age |
-| Silent LLM truncation | All history passed raw to the LLM API | Older turns are silently cut by the model's context window; citations break |
-| No user visibility | No token/message count surfaced to the frontend | Users cannot tell when their history is being ignored |
+| DB tăng trưởng không giới hạn | Không có TTL cho phiên hoặc tin nhắn | Kích thước file SQLite tăng mãi mãi |
+| Tải phiên chậm | Quét toàn bộ bảng cho mọi tin nhắn của một phiên | Độ trễ yêu cầu tăng theo tuổi phiên |
+| LLM cắt bớt âm thầm | Toàn bộ lịch sử được truyền thô đến LLM API | Các lượt cũ bị model cắt ngầm do giới hạn context window; citations bị gãy |
+| Người dùng không nhận biết được | Số lượng token/tin nhắn không được hiển thị lên frontend | Người dùng không thể biết khi lịch sử của họ bị bỏ qua |
 
-The `UpdatedAt` column on `ChatSession` is the only activity signal, but it is never queried for cleanup and has no index. There are currently three migrations (`InitialCreate`, `AddChatSessions`, `AddPerformanceIndexes`) producing the current schema.
-
----
-
-## 2. Solution Overview
-
-Six coordinated changes:
-
-1. **Session TTL** — `BackgroundService` that periodically deletes sessions idle for > N days.
-2. **Message sliding window** — `ChatService` sends only the last N messages to the LLM, never the full history.
-3. **Paginated history API** — `GET /api/chat/{sessionId}/history?page=1&pageSize=50` with total count and page metadata.
-4. **DB migration** — `LastActivityAt` column + index on `ChatSessions`; composite index on `ChatMessages(SessionId, CreatedAt)`.
-5. **Configuration** — All thresholds in `appsettings.json` under `Chat:*`, bound via `IOptions<ChatOptions>`.
-6. **Frontend** — Expired-session detection, per-turn context usage indicator, load-more pagination.
+Cột `UpdatedAt` trên `ChatSession` là tín hiệu hoạt động duy nhất, nhưng nó không bao giờ được truy vấn để dọn dẹp và không có index. Hiện tại có ba migration (`InitialCreate`, `AddChatSessions`, `AddPerformanceIndexes`) tạo ra schema hiện tại.
 
 ---
 
-## 3. Sub-Solution Detail
+## 2. Tổng quan giải pháp
 
-### 3.1 Configuration (`appsettings.json` + Options class)
+Sáu thay đổi phối hợp:
 
-#### `OpenRAG.Api/appsettings.json` — add `Chat` section
+1. **Session TTL** — `BackgroundService` định kỳ xóa các phiên không hoạt động quá N ngày.
+2. **Message sliding window** — `ChatService` chỉ gửi N tin nhắn cuối cùng đến LLM, không bao giờ gửi toàn bộ lịch sử.
+3. **Paginated history API** — `GET /api/chat/{sessionId}/history?page=1&pageSize=50` với tổng số và metadata phân trang.
+4. **DB migration** — Cột `LastActivityAt` + index trên `ChatSessions`; composite index trên `ChatMessages(SessionId, CreatedAt)`.
+5. **Configuration** — Tất cả các ngưỡng trong `appsettings.json` dưới `Chat:*`, được bind qua `IOptions<ChatOptions>`.
+6. **Frontend** — Phát hiện phiên hết hạn, chỉ báo sử dụng context theo từng lượt, phân trang load-more.
+
+---
+
+## 3. Chi tiết từng giải pháp con
+
+### 3.1 Cấu hình (`appsettings.json` + Options class)
+
+#### `OpenRAG.Api/appsettings.json` — thêm section `Chat`
 
 ```json
 {
@@ -70,14 +70,14 @@ Six coordinated changes:
 }
 ```
 
-**Semantics**:
+**Ý nghĩa các tham số**:
 
-- `SessionTtlDays` — sessions with no activity for this many days are deleted. `0` disables cleanup entirely.
-- `MaxMessagesInContext` — maximum number of messages sent to the LLM per request. Applied as a tail-of-history sliding window.
-- `CleanupIntervalHours` — how often the background cleanup job runs.
-- `HistoryPageSize` — default page size for the paginated history endpoint.
+- `SessionTtlDays` — các phiên không có hoạt động trong số ngày này sẽ bị xóa. `0` vô hiệu hóa hoàn toàn việc dọn dẹp.
+- `MaxMessagesInContext` — số lượng tin nhắn tối đa được gửi đến LLM mỗi yêu cầu. Áp dụng dưới dạng sliding window lấy đuôi lịch sử.
+- `CleanupIntervalHours` — tần suất chạy job dọn dẹp nền.
+- `HistoryPageSize` — kích thước trang mặc định cho endpoint lịch sử có phân trang.
 
-#### New file: `OpenRAG.Api/Options/ChatOptions.cs`
+#### File mới: `OpenRAG.Api/Options/ChatOptions.cs`
 
 ```csharp
 namespace OpenRAG.Api.Options;
@@ -108,13 +108,13 @@ public class ChatOptions
 
 ### 3.2 DB Migration — `LastActivityAt` + composite index
 
-#### Why `LastActivityAt` instead of reusing `UpdatedAt`
+#### Lý do dùng `LastActivityAt` thay vì tái sử dụng `UpdatedAt`
 
-`UpdatedAt` is semantically correct but has no index and its value is set via `session.UpdatedAt = DateTime.UtcNow` scattered in code rather than centralised. Renaming it would be a breaking column rename in SQLite (which requires table recreation). Instead, add a dedicated indexed column `LastActivityAt` that the background job queries exclusively, and keep `UpdatedAt` for audit purposes.
+`UpdatedAt` đúng về mặt ngữ nghĩa nhưng không có index và giá trị của nó được gán qua `session.UpdatedAt = DateTime.UtcNow` rải rác trong code thay vì tập trung. Đổi tên nó sẽ là một thay đổi phá vỡ tên cột trong SQLite (yêu cầu tạo lại bảng). Thay vào đó, thêm một cột có index chuyên dụng `LastActivityAt` mà job nền truy vấn độc quyền, và giữ `UpdatedAt` cho mục đích audit.
 
-#### New migration: `OpenRAG.Api/Data/Migrations/YYYYMMDDHHMMSS_AddSessionTtlSupport.cs`
+#### Migration mới: `OpenRAG.Api/Data/Migrations/YYYYMMDDHHMMSS_AddSessionTtlSupport.cs`
 
-(Run `dotnet ef migrations add AddSessionTtlSupport` after applying the model changes below, then replace the auto-generated body with:)
+(Chạy `dotnet ef migrations add AddSessionTtlSupport` sau khi áp dụng các thay đổi model bên dưới, rồi thay thế phần body tự sinh bằng:)
 
 ```csharp
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -180,13 +180,13 @@ namespace OpenRAG.Api.Data.Migrations
 }
 ```
 
-> **Zero-downtime note**: SQLite's `ALTER TABLE ADD COLUMN` with a `DEFAULT` is non-blocking. The old binary can still run against the new schema — it simply ignores `LastActivityAt`. The new binary writes it. There is a window where sessions from the old binary have `LastActivityAt = UpdatedAt` (backfilled by the default), which is correct. No table lock, no data loss.
+> **Lưu ý zero-downtime**: `ALTER TABLE ADD COLUMN` của SQLite với `DEFAULT` không gây block. Binary cũ vẫn có thể chạy trên schema mới — nó chỉ đơn giản bỏ qua `LastActivityAt`. Binary mới sẽ ghi vào nó. Có một khoảng thời gian ngắn mà các phiên từ binary cũ có `LastActivityAt = UpdatedAt` (được backfill bởi giá trị mặc định), điều này là đúng đắn. Không có table lock, không mất dữ liệu.
 
-#### `AppDbContext.OnModelCreating` changes
+#### Thay đổi trong `AppDbContext.OnModelCreating`
 
 File: `OpenRAG.Api/Data/AppDbContext.cs`
 
-Replace the `ChatMessageEntity` and add the `ChatSession` configuration block:
+Thay thế phần cấu hình `ChatMessageEntity` và thêm block cấu hình `ChatSession`:
 
 ```csharp
 protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -236,7 +236,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 }
 ```
 
-#### `ChatSession` entity update
+#### Cập nhật entity `ChatSession`
 
 File: `OpenRAG.Api/Models/Entities/ChatSession.cs`
 
@@ -264,7 +264,7 @@ public class ChatSession
 
 ### 3.3 Session TTL — Background Cleanup Service
 
-#### New file: `OpenRAG.Api/Services/ChatCleanupService.cs`
+#### File mới: `OpenRAG.Api/Services/ChatCleanupService.cs`
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -356,16 +356,16 @@ public sealed class ChatCleanupService(
 }
 ```
 
-**Key design decisions**:
+**Các quyết định thiết kế quan trọng**:
 
-- `IServiceScopeFactory` + `CreateAsyncScope()` — `AppDbContext` is registered as `Scoped`. `BackgroundService` is `Singleton`, so it cannot inject `AppDbContext` directly. A new scope per run avoids the anti-pattern of a long-lived DbContext.
-- `ExecuteDeleteAsync` — EF Core 7+ bulk-delete. Translates to `DELETE FROM ChatSessions WHERE LastActivityAt < ?`. No objects are materialised in memory; cascade at the DB level removes messages.
-- Guard on `SessionTtlDays <= 0` — operators can disable cleanup without removing the service registration.
-- The `catch` swallows transient errors rather than crashing the host process.
+- `IServiceScopeFactory` + `CreateAsyncScope()` — `AppDbContext` được đăng ký là `Scoped`. `BackgroundService` là `Singleton`, vì vậy nó không thể inject `AppDbContext` trực tiếp. Tạo một scope mới cho mỗi lần chạy tránh anti-pattern của DbContext tồn tại lâu dài.
+- `ExecuteDeleteAsync` — bulk-delete của EF Core 7+. Dịch thành `DELETE FROM ChatSessions WHERE LastActivityAt < ?`. Không có đối tượng nào được tạo trong bộ nhớ; cascade ở cấp DB xóa các tin nhắn liên quan.
+- Guard với `SessionTtlDays <= 0` — operator có thể vô hiệu hóa việc dọn dẹp mà không cần xóa đăng ký service.
+- `catch` nuốt các lỗi tạm thời thay vì làm crash tiến trình host.
 
-#### Register in `Program.cs`
+#### Đăng ký trong `Program.cs`
 
-Add after the existing service registrations:
+Thêm sau các đăng ký service hiện có:
 
 ```csharp
 // ── Chat configuration ────────────────────────────────────────────────────
@@ -378,13 +378,13 @@ builder.Services.AddHostedService<ChatCleanupService>();
 
 ---
 
-### 3.4 Message Sliding Window in `ChatService`
+### 3.4 Message Sliding Window trong `ChatService`
 
-The change is in the history-building step (step 3) of `ChatAsync`. Instead of loading all messages via `.Include()`, query only the last N directly from the DB ordered by `CreatedAt DESC LIMIT N`, then reverse for chronological order. This avoids materialising thousands of messages just to take the tail.
+Thay đổi nằm ở bước xây dựng lịch sử (bước 3) của `ChatAsync`. Thay vì tải tất cả tin nhắn qua `.Include()`, truy vấn trực tiếp chỉ N tin nhắn cuối từ DB được sắp xếp theo `CreatedAt DESC LIMIT N`, rồi đảo ngược để lấy thứ tự thời gian. Điều này tránh việc tạo hàng nghìn tin nhắn trong bộ nhớ chỉ để lấy phần đuôi.
 
-Additionally, `LastActivityAt` must be set on every interaction.
+Ngoài ra, `LastActivityAt` phải được cập nhật trong mỗi lần tương tác.
 
-File: `OpenRAG.Api/Services/ChatService.cs` — complete updated file:
+File: `OpenRAG.Api/Services/ChatService.cs` — file cập nhật đầy đủ:
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -540,15 +540,15 @@ public class ChatService(
 }
 ```
 
-**Why two queries instead of Include + LINQ Take?**
+**Tại sao dùng hai query thay vì Include + LINQ Take?**
 
-`.Include(s => s.Messages).Take(N)` does not work as expected: EF Core applies `Take` to the sessions query, not to the included messages collection. You would load all messages and apply `Take` in memory. The explicit `.Where(m => m.SessionId == ...).OrderByDescending(...).Take(N)` generates correct SQL.
+`.Include(s => s.Messages).Take(N)` không hoạt động như mong đợi: EF Core áp dụng `Take` cho query sessions, không phải cho collection messages được include. Bạn sẽ tải tất cả tin nhắn và áp dụng `Take` trong bộ nhớ. Cách viết tường minh `.Where(m => m.SessionId == ...).OrderByDescending(...).Take(N)` tạo ra SQL chính xác.
 
 ---
 
 ### 3.5 Response DTOs
 
-File: `OpenRAG.Api/Models/Dto/Responses/ChatResponse.cs` — complete updated file:
+File: `OpenRAG.Api/Models/Dto/Responses/ChatResponse.cs` — file cập nhật đầy đủ:
 
 ```csharp
 using OpenRAG.Api.Models.Dto.Shared;
@@ -593,9 +593,9 @@ public record ChatHistoryResponse(
 
 ---
 
-### 3.6 Controller Updates
+### 3.6 Cập nhật Controller
 
-File: `OpenRAG.Api/Controllers/ChatController.cs` — complete updated file:
+File: `OpenRAG.Api/Controllers/ChatController.cs` — file cập nhật đầy đủ:
 
 ```csharp
 using Microsoft.AspNetCore.Mvc;
@@ -666,19 +666,19 @@ public class ChatController(ChatService chat, IOptions<ChatOptions> options) : C
 
 ---
 
-### 3.7 Frontend Changes (`ChatTab.vue` + `api/index.ts`)
+### 3.7 Thay đổi Frontend (`ChatTab.vue` + `api/index.ts`)
 
-#### Problem
+#### Vấn đề
 
-`ChatTab.vue` has one existing session-expiry path in `onMounted` (the `catch` block clears `localStorage`). It needs three additions:
+`ChatTab.vue` có một đường dẫn xử lý session hết hạn hiện có trong `onMounted` (block `catch` xóa `localStorage`). Cần thêm ba phần:
 
-1. **Expired-session recovery on POST** — if `POST /api/chat` returns 404 with `code: "SESSION_NOT_FOUND"`, start a new session automatically rather than showing an opaque error.
-2. **Context usage indicator** — show a banner when `ContextStats.IsTruncated` is true, so users know the LLM is not seeing the full conversation.
-3. **Load-more pagination** for history — the history endpoint now returns pages; the UI should offer a "Load earlier messages" button.
+1. **Phục hồi phiên hết hạn khi POST** — nếu `POST /api/chat` trả về 404 với `code: "SESSION_NOT_FOUND"`, tự động bắt đầu một phiên mới thay vì hiển thị lỗi không rõ ràng.
+2. **Chỉ báo sử dụng context** — hiển thị banner khi `ContextStats.IsTruncated` là true, để người dùng biết LLM không thấy toàn bộ cuộc hội thoại.
+3. **Phân trang load-more cho lịch sử** — endpoint lịch sử giờ trả về theo trang; UI nên cung cấp nút "Tải tin nhắn cũ hơn".
 
-#### `frontend/src/api/index.ts` — updated types and functions
+#### `frontend/src/api/index.ts` — cập nhật types và functions
 
-Add/replace these sections in the existing file:
+Thêm/thay thế các section này trong file hiện có:
 
 ```typescript
 // Replace the existing ChatHistoryResponse interface:
@@ -715,9 +715,9 @@ export const getChatHistory = (sessionId: string, page = 1, pageSize = 50) =>
   })
 ```
 
-#### `frontend/src/components/ChatTab.vue` — key logic changes
+#### `frontend/src/components/ChatTab.vue` — các thay đổi logic quan trọng
 
-The full updated `<script setup>` section:
+Toàn bộ section `<script setup>` được cập nhật:
 
 ```typescript
 <script setup lang="ts">
@@ -750,13 +750,13 @@ const loading = ref(false)
 const error = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
 
-// Pagination state for history
+// Trạng thái phân trang cho lịch sử
 const historyPage = ref(1)
 const historyTotalPages = ref(1)
 const loadingHistory = ref(false)
 const hasEarlierMessages = computed(() => historyPage.value < historyTotalPages.value)
 
-// Context usage — populated from the last ChatResponse
+// Thống kê sử dụng context — được lấy từ ChatResponse cuối cùng
 const contextStats = ref<ContextUsageStats | null>(null)
 
 // ── Session bootstrap ─────────────────────────────────────────────────────
@@ -887,9 +887,9 @@ function scoreColor(score: number) {
 </script>
 ```
 
-**Template additions** — three new blocks to splice into the existing template:
+**Các bổ sung vào Template** — ba block mới cần được chèn vào template hiện có:
 
-1. **"Load earlier messages" button** — insert at the top of the message list div, before the empty-state `<div v-if="!messages.length"...>`:
+1. **Nút "Tải tin nhắn cũ hơn"** — chèn vào đầu div danh sách tin nhắn, trước `<div v-if="!messages.length"...>` hiển thị trạng thái rỗng:
 
 ```html
 <!-- Load earlier messages (pagination) -->
@@ -904,7 +904,7 @@ function scoreColor(score: number) {
 </div>
 ```
 
-2. **Context truncation warning** — insert between the message list and input bar:
+2. **Cảnh báo context bị cắt bớt** — chèn giữa danh sách tin nhắn và thanh nhập liệu:
 
 ```html
 <!-- Context window truncation notice -->
@@ -921,89 +921,90 @@ function scoreColor(score: number) {
 </div>
 ```
 
-3. **Session expiry inline error** (replace the existing `error.value` push with a user-visible banner using `v-if="error"` already present or add):
+3. **Lỗi inline phiên hết hạn** (thay thế push `error.value` hiện có bằng một banner hiển thị cho người dùng sử dụng `v-if="error"` đã có sẵn hoặc thêm mới):
 
-The existing error display in the template (if any) is already shown. The key change is in `sendMessage` above: the `SESSION_NOT_FOUND` path repopulates `query.value` and calls `clearSession()` so the user can simply press Send again in a fresh session.
+Màn hình hiển thị lỗi hiện có trong template (nếu có) đã được hiển thị. Thay đổi quan trọng nằm ở `sendMessage` phía trên: đường dẫn `SESSION_NOT_FOUND` tái đặt lại `query.value` và gọi `clearSession()` để người dùng có thể đơn giản nhấn Gửi lại trong một phiên mới.
 
 ---
 
-## 4. Migration Strategy (Zero-Downtime)
+## 4. Chiến lược Migration (Zero-Downtime)
 
-### Sequence
+### Trình tự thực hiện
 
 ```
-Step 1  Deploy migration only (dotnet ef database update)
-        — Old binary runs, ignores LastActivityAt column.
-        — LastActivityAt backfilled from UpdatedAt via DEFAULT expression.
-        — No downtime.
+Bước 1  Triển khai chỉ migration (dotnet ef database update)
+        — Binary cũ chạy, bỏ qua cột LastActivityAt.
+        — LastActivityAt được backfill từ UpdatedAt qua DEFAULT expression.
+        — Không có downtime.
 
-Step 2  Deploy new binary
-        — ChatService now writes LastActivityAt on every request.
-        — CleanupService starts, waits CleanupIntervalHours before first run.
-        — Old sessions without activity since Step 1 will be cleaned
-          based on their UpdatedAt-backfilled LastActivityAt — correct.
+Bước 2  Triển khai binary mới
+        — ChatService giờ ghi LastActivityAt mỗi request.
+        — CleanupService khởi động, chờ CleanupIntervalHours trước lần chạy đầu tiên.
+        — Các phiên cũ không có hoạt động kể từ Bước 1 sẽ được dọn dẹp
+          dựa trên LastActivityAt được backfill từ UpdatedAt — đúng đắn.
 
-Step 3  Monitor
-        — Watch logs for "ChatCleanupService: deleted N expired session(s)".
-        — Confirm DB file size decreases (or stops growing) over days.
-        — If SessionTtlDays is too aggressive, increase it in appsettings
-          without redeployment (IOptionsMonitor can be used for hot-reload;
-          IOptions is sufficient if a rolling restart is acceptable).
+Bước 3  Theo dõi
+        — Xem log "ChatCleanupService: deleted N expired session(s)".
+        — Xác nhận kích thước file DB giảm (hoặc ngừng tăng) theo thời gian.
+        — Nếu SessionTtlDays quá ngắn, tăng lên trong appsettings
+          mà không cần redeploy (IOptionsMonitor có thể dùng cho hot-reload;
+          IOptions là đủ nếu rolling restart được chấp nhận).
 ```
 
 ### Rollback
 
-If the new binary must be rolled back:
+Nếu binary mới phải được rollback:
 
-- Old binary runs against the new schema but ignores `LastActivityAt` — works correctly.
-- `CleanupService` is not present in the old binary — no cleanup runs, data is safe.
-- Re-run `dotnet ef database update <previous-migration-name>` if the column must be dropped; this is safe with SQLite as it recreates the table.
+- Binary cũ chạy trên schema mới nhưng bỏ qua `LastActivityAt` — hoạt động chính xác.
+- `CleanupService` không có trong binary cũ — không có việc dọn dẹp nào chạy, dữ liệu an toàn.
+- Chạy lại `dotnet ef database update <previous-migration-name>` nếu cột phải được xóa; điều này an toàn với SQLite vì nó tạo lại bảng.
 
 ---
 
-## 5. Complete File Change Summary
+## 5. Tóm tắt đầy đủ các file thay đổi
 
-| File | Change type | Description |
+| File | Loại thay đổi | Mô tả |
 |---|---|---|
-| `appsettings.json` | Edit | Add `Chat` config section |
-| `Options/ChatOptions.cs` | **New** | Strongly-typed options class |
-| `Models/Entities/ChatSession.cs` | Edit | Add `LastActivityAt` property |
-| `Data/AppDbContext.cs` | Edit | Add `ChatSession` index config; replace `ChatMessage` index |
-| `Data/Migrations/YYYYMMDDHHMMSS_AddSessionTtlSupport.cs` | **New** | Migration: `LastActivityAt` column + indexes |
-| `Services/ChatCleanupService.cs` | **New** | `BackgroundService` TTL cleanup |
-| `Services/ChatService.cs` | Edit | Sliding window query; `LastActivityAt` update; paginated history |
-| `Models/Dto/Responses/ChatResponse.cs` | Edit | Add `ContextUsageStats`; update `ChatHistoryResponse` |
-| `Controllers/ChatController.cs` | Edit | `page`/`pageSize` query params; `SESSION_NOT_FOUND` code |
-| `Program.cs` | Edit | Register `ChatOptions`; register `ChatCleanupService` |
-| `frontend/src/api/index.ts` | Edit | Updated types; `getChatHistory` pagination params |
-| `frontend/src/components/ChatTab.vue` | Edit | Session recovery; context banner; load-earlier button |
+| `appsettings.json` | Sửa | Thêm section cấu hình `Chat` |
+| `Options/ChatOptions.cs` | **Mới** | Class options strongly-typed |
+| `Models/Entities/ChatSession.cs` | Sửa | Thêm property `LastActivityAt` |
+| `Data/AppDbContext.cs` | Sửa | Thêm cấu hình index `ChatSession`; thay thế index `ChatMessage` |
+| `Data/Migrations/YYYYMMDDHHMMSS_AddSessionTtlSupport.cs` | **Mới** | Migration: cột `LastActivityAt` + indexes |
+| `Services/ChatCleanupService.cs` | **Mới** | `BackgroundService` dọn dẹp TTL |
+| `Services/ChatService.cs` | Sửa | Query sliding window; cập nhật `LastActivityAt`; lịch sử có phân trang |
+| `Models/Dto/Responses/ChatResponse.cs` | Sửa | Thêm `ContextUsageStats`; cập nhật `ChatHistoryResponse` |
+| `Controllers/ChatController.cs` | Sửa | Tham số query `page`/`pageSize`; code `SESSION_NOT_FOUND` |
+| `Program.cs` | Sửa | Đăng ký `ChatOptions`; đăng ký `ChatCleanupService` |
+| `frontend/src/api/index.ts` | Sửa | Cập nhật types; tham số phân trang `getChatHistory` |
+| `frontend/src/components/ChatTab.vue` | Sửa | Phục hồi phiên; banner context; nút load-earlier |
 
 ---
 
-## 6. Trade-offs
+## 6. Đánh đổi thiết kế
 
-### 6.1 SQLite vs. a proper RDBMS
+### 6.1 SQLite so với RDBMS thực sự
 
-`ExecuteDeleteAsync` on SQLite is not atomic across multiple tables when cascade delete relies on triggers — SQLite's `ON DELETE CASCADE` is implemented as a trigger and fires correctly, but the entire operation is inside a single implicit transaction, so it is safe. If the project migrates to PostgreSQL, the same EF Core code works unchanged.
+`ExecuteDeleteAsync` trên SQLite không phải là atomic trên nhiều bảng khi cascade delete dựa vào trigger — `ON DELETE CASCADE` của SQLite được triển khai dưới dạng trigger và kích hoạt đúng cách, nhưng toàn bộ thao tác nằm trong một transaction ngầm định duy nhất, vì vậy nó an toàn. Nếu dự án chuyển sang PostgreSQL, cùng code EF Core hoạt động không cần thay đổi.
 
-### 6.2 Sliding window vs. summarisation
+### 6.2 Sliding window so với tóm tắt hóa
 
-Taking the last N messages is the simplest strategy. A production-grade alternative is **rolling summarisation**: when message count exceeds the cap, call the LLM to summarise the older portion, store the summary as a special `"summary"` role message, and prepend it to future context. This preserves semantic information but requires an extra LLM call per threshold crossing and complicates the DB schema. The sliding window is the correct starting point; summarisation can be layered on top later without breaking the API contract.
+Lấy N tin nhắn cuối là chiến lược đơn giản nhất. Một giải pháp thay thế cấp production là **rolling summarisation**: khi số tin nhắn vượt quá giới hạn, gọi LLM để tóm tắt phần cũ hơn, lưu tóm tắt dưới dạng tin nhắn role `"summary"` đặc biệt, và thêm nó vào đầu context tương lai. Điều này bảo toàn thông tin ngữ nghĩa nhưng yêu cầu một LLM call bổ sung mỗi khi vượt ngưỡng và làm phức tạp DB schema. Sliding window là điểm khởi đầu đúng đắn; việc tóm tắt hóa có thể được bổ sung sau mà không phá vỡ API contract.
 
-### 6.3 `IOptions` vs. `IOptionsMonitor`
+### 6.3 `IOptions` so với `IOptionsMonitor`
 
-`IOptions<ChatOptions>` is injected once at service construction. Changing `Chat:SessionTtlDays` in `appsettings.json` requires a process restart. Using `IOptionsMonitor<ChatOptions>` would allow hot-reload without restart. The background service should use `IOptionsMonitor` and call `.CurrentValue` on each iteration if hot-reload is desired. The current design uses `IOptions` for simplicity; the upgrade path is straightforward (replace the injection type and `.Value` access pattern).
+`IOptions<ChatOptions>` được inject một lần khi khởi tạo service. Thay đổi `Chat:SessionTtlDays` trong `appsettings.json` yêu cầu khởi động lại tiến trình. Sử dụng `IOptionsMonitor<ChatOptions>` sẽ cho phép hot-reload mà không cần restart. Background service nên dùng `IOptionsMonitor` và gọi `.CurrentValue` trong mỗi vòng lặp nếu hot-reload là mong muốn. Thiết kế hiện tại dùng `IOptions` cho đơn giản; con đường nâng cấp rất đơn giản (thay thế kiểu injection và pattern truy cập `.Value`).
 
-### 6.4 `BackgroundService` vs. a cron-based external job
+### 6.4 `BackgroundService` so với job ngoài dựa trên cron
 
-`BackgroundService` runs in-process, which means:
-- **Pros**: no external scheduler dependency, participates in graceful shutdown, shares the DI container.
-- **Cons**: does not run during deployment gaps; if the API has zero uptime overnight, cleanup does not happen. For very high reliability, delegate cleanup to an external scheduler (OS cron, Kubernetes CronJob, Hangfire). For this project's scale, `BackgroundService` is proportionate.
+`BackgroundService` chạy trong tiến trình, có nghĩa là:
 
-### 6.5 Hard cap of 200 on `pageSize`
+- **Ưu điểm**: không phụ thuộc vào scheduler ngoài, tham gia vào graceful shutdown, chia sẻ DI container.
+- **Nhược điểm**: không chạy trong các khoảng thời gian deployment; nếu API không có uptime qua đêm, việc dọn dẹp không xảy ra. Đối với độ tin cậy rất cao, hãy ủy quyền dọn dẹp cho external scheduler (OS cron, Kubernetes CronJob, Hangfire). Với quy mô của dự án này, `BackgroundService` là phù hợp.
 
-The controller enforces `pageSize = Math.Min(pageSize, 200)`. This prevents a client from requesting `pageSize=100000` and materialising the entire table in one query. The trade-off is that very long sessions require multiple round-trips to fully hydrate in the UI — acceptable since the UI uses progressive load-more rather than loading everything at once.
+### 6.5 Giới hạn cứng 200 cho `pageSize`
 
-### 6.6 `COUNT` + `SELECT` per chat request (two queries)
+Controller bắt buộc `pageSize = Math.Min(pageSize, 200)`. Điều này ngăn client yêu cầu `pageSize=100000` và tạo toàn bộ bảng trong một query. Sự đánh đổi là các phiên rất dài yêu cầu nhiều round-trip để hydrate đầy đủ trong UI — chấp nhận được vì UI sử dụng load-more dần dần thay vì tải tất cả cùng một lúc.
 
-`ChatAsync` now executes two queries: one `COUNT(*)` and one `SELECT TOP N`. For SQLite on a single-server deployment this is negligible (sub-millisecond). If this becomes a bottleneck, the count can be cached in a `ChatSession.MessageCount` denormalised column, incremented on insert — but that introduces a consistency risk and is premature optimisation for the current scale.
+### 6.6 `COUNT` + `SELECT` mỗi chat request (hai query)
+
+`ChatAsync` giờ thực hiện hai query: một `COUNT(*)` và một `SELECT TOP N`. Đối với SQLite trên deployment một server này là không đáng kể (dưới mili giây). Nếu điều này trở thành bottleneck, count có thể được cache trong cột denormalized `ChatSession.MessageCount`, tăng lên khi insert — nhưng điều đó tạo ra rủi ro tính nhất quán và là tối ưu hóa sớm cho quy mô hiện tại.
