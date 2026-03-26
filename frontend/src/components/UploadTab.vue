@@ -1,11 +1,31 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import * as signalR from '@microsoft/signalr'
-import { uploadFile, ingestText } from '../api'
+import { uploadFile, ingestText, createCollection } from '../api'
 import { useCollectionsStore } from '../stores/collections'
 
 const store = useCollectionsStore()
+
+// ── Collection selector ─────────────────────────────────────────────────────
 const collection = ref('documents')
+const newCollectionName = ref('')
+const showNewCollection = ref(false)
+
+async function confirmNewCollection() {
+  const name = newCollectionName.value.trim()
+  if (!name) return
+  try {
+    await createCollection(name, '')
+    await store.fetch()
+    collection.value = name
+    showNewCollection.value = false
+    newCollectionName.value = ''
+  } catch {
+    collection.value = name
+    showNewCollection.value = false
+    newCollectionName.value = ''
+  }
+}
 
 // ── SignalR progress ────────────────────────────────────────────────────────
 interface ProgressInfo { stage: string; progress: number }
@@ -29,7 +49,7 @@ onMounted(async () => {
   try {
     await hubConnection.start()
   } catch {
-    // silently ignore — progress bar just won't update in real-time
+    // silently ignore
   }
 })
 
@@ -37,16 +57,31 @@ onUnmounted(async () => {
   await hubConnection?.stop()
 })
 
-// ── File upload ─────────────────────────────────────────────────────────────
-interface FileEntry {
-  file: File
-  status: 'pending' | 'uploading' | 'done' | 'error'
+// ── Unified item list ───────────────────────────────────────────────────────
+type ItemStatus = 'pending' | 'uploading' | 'done' | 'error'
+
+interface QueueItem {
+  id: number
+  type: 'file' | 'text'
+  label: string
+  file?: File
+  textTitle?: string
+  textContent?: string
+  status: ItemStatus
   message: string
   documentId?: string
 }
 
-const files = ref<FileEntry[]>([])
+let nextId = 0
+const queue = ref<QueueItem[]>([])
 const dragging = ref(false)
+const processing = ref(false)
+
+// Text input form
+const textTitle = ref('')
+const textContent = ref('')
+
+const hasPending = computed(() => queue.value.some(q => q.status === 'pending'))
 
 function onDrop(e: DragEvent) {
   dragging.value = false
@@ -61,140 +96,226 @@ function onFileChange(e: Event) {
 }
 
 function addFiles(newFiles: File[]) {
-  for (const f of newFiles)
-    files.value.push({ file: f, status: 'pending', message: '' })
+  for (const f of newFiles) {
+    queue.value.push({
+      id: nextId++,
+      type: 'file',
+      label: f.name,
+      file: f,
+      status: 'pending',
+      message: '',
+    })
+  }
 }
 
-async function uploadAll() {
-  for (const item of files.value.filter(f => f.status === 'pending')) {
+function addText() {
+  const content = textContent.value.trim()
+  if (!content) return
+  const title = textTitle.value.trim() || 'untitled'
+  queue.value.push({
+    id: nextId++,
+    type: 'text',
+    label: title,
+    textTitle: title,
+    textContent: content,
+    status: 'pending',
+    message: '',
+  })
+  textTitle.value = ''
+  textContent.value = ''
+}
+
+function removeItem(id: number) {
+  queue.value = queue.value.filter(q => q.id !== id)
+}
+
+function clearDone() {
+  queue.value = queue.value.filter(q => q.status !== 'done' && q.status !== 'error')
+}
+
+async function startAll() {
+  processing.value = true
+  for (const item of queue.value.filter(q => q.status === 'pending')) {
     item.status = 'uploading'
     try {
-      const { data } = await uploadFile(item.file, collection.value)
-      item.documentId = data.documentId
+      if (item.type === 'file' && item.file) {
+        const { data } = await uploadFile(item.file, collection.value)
+        item.documentId = data.documentId
+        item.message = data.message
+      } else if (item.type === 'text' && item.textContent) {
+        const { data } = await ingestText(item.textContent, item.textTitle || 'untitled', collection.value)
+        item.documentId = data.documentId
+        item.message = data.message
+      }
       item.status = 'done'
-      item.message = data.message
-      store.fetch()
     } catch (e: any) {
       item.status = 'error'
       item.message = e.response?.data?.detail ?? e.message
     }
   }
+  processing.value = false
+  store.fetch()
 }
 
-function getProgress(item: FileEntry): ProgressInfo | null {
+function getProgress(item: QueueItem): ProgressInfo | null {
   if (!item.documentId) return null
   return progressMap.value.get(item.documentId) ?? null
 }
 
 function stageLabel(stage: string) {
-  return { converting: 'Đang chuyển đổi...', chunking: 'Đang phân đoạn...', embedding: 'Đang nhúng...', done: 'Hoàn thành', failed: 'Thất bại' }[stage] ?? stage
+  return { converting: 'Chuyển đổi...', chunking: 'Phân đoạn...', embedding: 'Nhúng...', done: 'Hoàn thành', failed: 'Thất bại' }[stage] ?? stage
 }
 
-// ── Text ingest ─────────────────────────────────────────────────────────────
-const textTitle = ref('')
-const textContent = ref('')
-const textStatus = ref('')
-const textLoading = ref(false)
-
-async function submitText() {
-  if (!textContent.value.trim()) return
-  textLoading.value = true
-  textStatus.value = ''
-  try {
-    const { data } = await ingestText(textContent.value, textTitle.value || 'untitled', collection.value)
-    textStatus.value = data.message
-    textTitle.value = ''
-    textContent.value = ''
-    store.fetch()
-  } catch (e: any) {
-    textStatus.value = 'Lỗi: ' + (e.response?.data?.detail ?? e.message)
-  } finally {
-    textLoading.value = false
-  }
-}
-
-const statusClass = (s: string) => ({
+const statusClass = (s: ItemStatus) => ({
   pending: 'text-slate-400',
   uploading: 'text-yellow-400 animate-pulse',
   done: 'text-green-400',
   error: 'text-red-400',
-}[s] ?? 'text-slate-400')
+}[s])
+
+const typeIcon = (t: string) => t === 'file' ? '&#128196;' : '&#128221;'
 </script>
 
 <template>
-  <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-    <!-- File upload -->
-    <div class="space-y-4">
-      <h3 class="text-slate-300 font-medium">Upload tài liệu</h3>
+  <div class="flex gap-6 h-[calc(100vh-8rem)]">
 
-      <select v-model="collection" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-300 focus:outline-none focus:border-violet-500">
-        <option v-for="c in store.collections" :key="c.name" :value="c.name">{{ c.name }}</option>
-      </select>
+    <!-- Left: Collection + inputs -->
+    <aside class="w-80 flex-shrink-0 space-y-4 overflow-y-auto">
+      <h3 class="text-slate-400 text-xs font-semibold uppercase tracking-wider">Thêm tài liệu</h3>
 
+      <!-- Collection selector -->
+      <div class="space-y-1.5">
+        <label class="text-slate-500 text-xs">Collection</label>
+        <div class="flex gap-2">
+          <select
+            v-if="!showNewCollection"
+            v-model="collection"
+            class="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-300 text-sm focus:outline-none focus:border-violet-500"
+          >
+            <option v-for="c in store.collections" :key="c.name" :value="c.name">{{ c.name }}</option>
+          </select>
+          <input
+            v-else
+            v-model="newCollectionName"
+            placeholder="Tên collection mới..."
+            @keyup.enter="confirmNewCollection"
+            class="flex-1 bg-slate-800 border border-violet-500 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-500 text-sm focus:outline-none"
+          />
+          <button
+            v-if="!showNewCollection"
+            @click="showNewCollection = true"
+            class="px-2.5 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-xs transition-colors whitespace-nowrap"
+          >+ Mới</button>
+          <template v-else>
+            <button
+              @click="confirmNewCollection"
+              :disabled="!newCollectionName.trim()"
+              class="px-2.5 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white rounded-lg text-xs transition-colors"
+            >Tạo</button>
+            <button
+              @click="showNewCollection = false; newCollectionName = ''"
+              class="px-2.5 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-xs transition-colors"
+            >Huỷ</button>
+          </template>
+        </div>
+      </div>
+
+      <!-- Drop zone -->
       <div
         @dragover.prevent="dragging = true"
         @dragleave="dragging = false"
         @drop.prevent="onDrop"
-        :class="['border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors', dragging ? 'border-violet-400 bg-violet-900/20' : 'border-slate-600 hover:border-slate-500']"
+        :class="['border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors', dragging ? 'border-violet-400 bg-violet-900/20' : 'border-slate-600 hover:border-slate-500']"
         @click="($refs.fileInput as HTMLInputElement).click()"
       >
-        <p class="text-slate-400">Kéo thả file hoặc click để chọn</p>
-        <p class="text-slate-600 text-sm mt-1">PDF, DOCX, XLSX, PPTX, TXT, MD...</p>
+        <p class="text-slate-400 text-sm">Kéo thả file hoặc click để chọn</p>
+        <p class="text-slate-600 text-xs mt-1">PDF, DOCX, XLSX, PPTX, TXT, MD...</p>
         <input ref="fileInput" type="file" multiple class="hidden" @change="onFileChange" />
       </div>
 
-      <div v-if="files.length" class="space-y-2">
-        <div v-for="(f, i) in files" :key="i" class="bg-slate-800 rounded-lg px-3 py-2 space-y-1">
-          <div class="flex items-center justify-between">
-            <span class="text-slate-300 text-sm truncate flex-1">{{ f.file.name }}</span>
-            <span :class="['text-xs ml-2', statusClass(f.status)]">
-              <template v-if="f.status === 'uploading' && getProgress(f)">
-                {{ stageLabel(getProgress(f)!.stage) }}
+      <!-- Text input -->
+      <div class="space-y-1.5">
+        <label class="text-slate-500 text-xs">Hoặc nhập nội dung trực tiếp</label>
+        <input
+          v-model="textTitle"
+          placeholder="Tiêu đề (tuỳ chọn)"
+          class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-violet-500"
+        />
+        <textarea
+          v-model="textContent"
+          placeholder="Nội dung markdown..."
+          rows="5"
+          class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-violet-500 resize-none font-mono"
+        />
+        <button
+          @click="addText"
+          :disabled="!textContent.trim()"
+          class="w-full py-1.5 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 rounded-lg text-slate-300 text-sm transition-colors"
+        >+ Thêm vào danh sách</button>
+      </div>
+    </aside>
+
+    <!-- Right: Queue -->
+    <div class="flex-1 flex flex-col min-w-0">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-slate-400 text-xs font-semibold uppercase tracking-wider">
+          Danh sách ({{ queue.length }})
+        </h3>
+        <button
+          v-if="queue.some(q => q.status === 'done' || q.status === 'error')"
+          @click="clearDone"
+          class="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+        >Xoá đã xong</button>
+      </div>
+
+      <!-- Queue list -->
+      <div class="flex-1 overflow-y-auto space-y-1.5">
+        <div
+          v-for="item in queue"
+          :key="item.id"
+          class="bg-slate-800 rounded-lg px-3 py-2 group"
+        >
+          <div class="flex items-center gap-2">
+            <span class="text-sm flex-shrink-0" v-html="typeIcon(item.type)" />
+            <span class="text-slate-300 text-sm truncate flex-1">{{ item.label }}</span>
+            <span :class="['text-xs flex-shrink-0', statusClass(item.status)]">
+              <template v-if="item.status === 'uploading' && getProgress(item)">
+                {{ stageLabel(getProgress(item)!.stage) }}
               </template>
-              <template v-else-if="f.status === 'done' || f.status === 'error'">{{ f.message }}</template>
-              <template v-else>{{ f.status }}</template>
+              <template v-else-if="item.status === 'done'">{{ item.message }}</template>
+              <template v-else-if="item.status === 'error'">{{ item.message }}</template>
+              <template v-else>chờ xử lý</template>
             </span>
+            <button
+              v-if="item.status === 'pending'"
+              @click="removeItem(item.id)"
+              class="text-slate-600 hover:text-red-400 text-sm flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+              title="Xoá"
+            >&times;</button>
           </div>
-          <!-- Progress bar -->
-          <div v-if="f.status === 'uploading'" class="w-full bg-slate-700 rounded-full h-1">
+          <div v-if="item.status === 'uploading'" class="mt-1.5 w-full bg-slate-700 rounded-full h-1">
             <div
               class="bg-violet-500 h-1 rounded-full transition-all duration-300"
-              :style="{ width: `${getProgress(f)?.progress ?? 5}%` }"
+              :style="{ width: `${getProgress(item)?.progress ?? 5}%` }"
             />
           </div>
         </div>
-        <button
-          @click="uploadAll"
-          :disabled="files.every(f => f.status !== 'pending')"
-          class="w-full py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 rounded-lg text-white text-sm font-medium transition-colors"
-        >
-          Upload tất cả
-        </button>
+
+        <div v-if="!queue.length" class="flex items-center justify-center text-slate-600 h-full text-sm">
+          Kéo thả file hoặc nhập nội dung để thêm vào danh sách
+        </div>
       </div>
-    </div>
 
-    <!-- Text input -->
-    <div class="space-y-4">
-      <h3 class="text-slate-300 font-medium">Nhập text trực tiếp</h3>
-
-      <input v-model="textTitle" placeholder="Tiêu đề tài liệu" class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-500" />
-
-      <textarea
-        v-model="textContent"
-        placeholder="Nội dung markdown..."
-        rows="10"
-        class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-500 resize-none font-mono text-sm"
-      />
-
-      <div v-if="textStatus" class="text-sm" :class="textStatus.startsWith('Lỗi') ? 'text-red-400' : 'text-green-400'">{{ textStatus }}</div>
-
+      <!-- Start button -->
       <button
-        @click="submitText"
-        :disabled="textLoading || !textContent.trim()"
-        class="w-full py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 rounded-lg text-white text-sm font-medium transition-colors"
+        v-if="queue.length"
+        @click="startAll"
+        :disabled="!hasPending || processing"
+        class="mt-3 w-full py-2.5 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 rounded-lg text-white font-medium transition-colors"
       >
-        {{ textLoading ? 'Đang xử lý...' : 'Index text' }}
+        {{ processing ? 'Đang xử lý...' : 'Bắt đầu xử lý' }}
       </button>
     </div>
+
   </div>
 </template>

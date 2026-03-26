@@ -65,7 +65,7 @@ const tabs = [
     </nav>
 
     <!-- Content -->
-    <main class="max-w-5xl mx-auto px-6 py-6">
+    <main class="px-6 py-6">
       <SearchTab v-if="tab === 'search'" />
       <ChatTab v-else-if="tab === 'chat'" />
       <UploadTab v-else-if="tab === 'upload'" />

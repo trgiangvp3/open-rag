@@ -10,6 +10,7 @@ import json
 import logging
 import shutil
 import threading
+import time
 from pathlib import Path
 
 import tantivy
@@ -18,9 +19,16 @@ from config import BM25_INDEX_DIR, BM25_WRITER_HEAP_SIZE
 
 logger = logging.getLogger(__name__)
 
+_MAX_RETRIES = 3
+_RETRY_DELAY = 0.5  # seconds
+
 
 class TantivyBM25Index:
-    """Manages a single tantivy index for one collection."""
+    """Manages a single tantivy index for one collection.
+
+    Thread-safety: all write operations are serialized via a single lock.
+    Only one writer exists per index (tantivy requirement on Windows).
+    """
 
     def __init__(self, index_dir: Path, heap_size: int = BM25_WRITER_HEAP_SIZE):
         self._index_dir = index_dir
@@ -34,6 +42,8 @@ class TantivyBM25Index:
         self._schema = schema_builder.build()
 
         self._index = self._open_or_create()
+        self._writer: tantivy.IndexWriter | None = None
+        self._ensure_writer()
 
     def _open_or_create(self) -> tantivy.Index:
         """Open existing index or create a new one, handling schema mismatches."""
@@ -49,39 +59,76 @@ class TantivyBM25Index:
             self._index_dir.mkdir(parents=True, exist_ok=True)
             return tantivy.Index(self._schema, path=str(self._index_dir))
 
+    def _ensure_writer(self) -> None:
+        """Create a writer if one doesn't exist or the previous one is broken."""
+        if self._writer is None:
+            self._writer = self._index.writer(self._heap_size)
+
+    def _reset_writer(self) -> None:
+        """Discard the current writer and create a fresh one."""
+        try:
+            if self._writer is not None:
+                del self._writer
+        except Exception:
+            pass
+        self._writer = None
+        # Small delay to let OS release file handles (Windows issue)
+        time.sleep(0.1)
+        self._writer = self._index.writer(self._heap_size)
+
     # ── Write operations ──────────────────────────────────────────────────
 
     def add(self, chunk_ids: list[str], texts: list[str], metadatas: list[dict]) -> None:
-        """Add documents to the index."""
+        """Add documents to the index (upsert — deletes existing IDs first)."""
         with self._lock:
-            writer = self._index.writer(self._heap_size)
-            try:
-                for cid, text, meta in zip(chunk_ids, texts, metadatas):
-                    writer.add_document(tantivy.Document(
-                        chunk_id=cid,
-                        body=text,
-                        metadata=json.dumps(meta, ensure_ascii=False),
-                    ))
-                writer.commit()
-            except Exception:
-                writer.rollback()
-                raise
-            self._index.reload()
+            for attempt in range(_MAX_RETRIES):
+                try:
+                    self._ensure_writer()
+                    # Delete existing docs with same IDs to avoid duplicates
+                    for cid in chunk_ids:
+                        self._writer.delete_documents("chunk_id", cid)
+                    for cid, text, meta in zip(chunk_ids, texts, metadatas):
+                        self._writer.add_document(tantivy.Document(
+                            chunk_id=cid,
+                            body=text,
+                            metadata=json.dumps(meta, ensure_ascii=False),
+                        ))
+                    self._writer.commit()
+                    self._index.reload()
+                    return
+                except Exception:
+                    logger.warning(
+                        "Tantivy write failed for '%s' (attempt %d/%d), resetting writer",
+                        self._index_dir.name, attempt + 1, _MAX_RETRIES,
+                    )
+                    self._reset_writer()
+                    if attempt < _MAX_RETRIES - 1:
+                        time.sleep(_RETRY_DELAY)
+            # Final attempt failed — raise
+            raise RuntimeError(f"Tantivy write failed after {_MAX_RETRIES} retries for '{self._index_dir.name}'")
 
     def delete(self, chunk_ids: list[str]) -> None:
         """Delete documents by chunk_id."""
         if not chunk_ids:
             return
         with self._lock:
-            writer = self._index.writer(self._heap_size)
-            try:
-                for cid in chunk_ids:
-                    writer.delete_documents("chunk_id", cid)
-                writer.commit()
-            except Exception:
-                writer.rollback()
-                raise
-            self._index.reload()
+            for attempt in range(_MAX_RETRIES):
+                try:
+                    self._ensure_writer()
+                    for cid in chunk_ids:
+                        self._writer.delete_documents("chunk_id", cid)
+                    self._writer.commit()
+                    self._index.reload()
+                    return
+                except Exception:
+                    logger.warning(
+                        "Tantivy delete failed for '%s' (attempt %d/%d), resetting writer",
+                        self._index_dir.name, attempt + 1, _MAX_RETRIES,
+                    )
+                    self._reset_writer()
+                    if attempt < _MAX_RETRIES - 1:
+                        time.sleep(_RETRY_DELAY)
+            raise RuntimeError(f"Tantivy delete failed after {_MAX_RETRIES} retries for '{self._index_dir.name}'")
 
     # ── Read operations ───────────────────────────────────────────────────
 
@@ -154,7 +201,7 @@ class HybridSearcher:
     def delete_collection(self, collection_name: str) -> None:
         """Delete the entire BM25 index for a collection."""
         with self._lock:
-            idx = self._indexes.pop(collection_name, None)
+            self._indexes.pop(collection_name, None)
         index_dir = BM25_INDEX_DIR / collection_name
         if index_dir.exists():
             shutil.rmtree(index_dir, ignore_errors=True)
