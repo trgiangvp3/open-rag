@@ -73,6 +73,7 @@ export interface StatusResponse {
 export interface SearchOptions {
   useReranker?: boolean
   searchMode?: 'semantic' | 'hybrid'
+  queryStrategy?: 'direct' | 'multi-query' | 'hyde' | 'multi-query+hyde'
   generate?: boolean
 }
 
@@ -83,6 +84,7 @@ export interface ChatRequest {
   topK?: number
   useReranker?: boolean
   searchMode?: string
+  queryStrategy?: string
 }
 
 export interface ChatResponse {

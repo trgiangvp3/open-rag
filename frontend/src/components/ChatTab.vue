@@ -22,7 +22,8 @@ function renderMdPlain(text: string): string {
 const store = useCollectionsStore()
 const collection = ref('documents')
 const useReranker = ref(true)
-const searchMode = ref('hybrid')
+const queryStrategy = ref<'direct' | 'multi-query' | 'hyde' | 'multi-query+hyde'>('multi-query+hyde')
+const retrievalMode = ref('hybrid')
 
 const SESSION_KEY = 'openrag_chat_session_id'
 
@@ -84,7 +85,8 @@ async function sendMessage() {
       sessionId: sessionId.value ?? undefined,
       topK: 5,
       useReranker: useReranker.value,
-      searchMode: searchMode.value,
+      searchMode: retrievalMode.value,
+      queryStrategy: queryStrategy.value,
     })
     sessionId.value = data.sessionId
     localStorage.setItem(SESSION_KEY, data.sessionId)
@@ -171,13 +173,22 @@ async function loadViewer() {
       </div>
 
       <div class="space-y-1">
-        <label class="text-slate-500 text-[10px] uppercase tracking-wider">Chế độ</label>
-        <select v-model="searchMode"
+        <label class="text-slate-500 text-[10px] uppercase tracking-wider">Query</label>
+        <select v-model="queryStrategy"
+          class="w-full bg-slate-800/80 border border-slate-600/50 rounded-lg px-2 py-1.5 text-slate-300 text-xs focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/20">
+          <option value="direct">Trực tiếp</option>
+          <option value="multi-query">Multi-query</option>
+          <option value="hyde">HyDE</option>
+          <option value="multi-query+hyde">Multi + HyDE</option>
+        </select>
+      </div>
+
+      <div class="space-y-1">
+        <label class="text-slate-500 text-[10px] uppercase tracking-wider">Phương pháp</label>
+        <select v-model="retrievalMode"
           class="w-full bg-slate-800/80 border border-slate-600/50 rounded-lg px-2 py-1.5 text-slate-300 text-xs focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/20">
           <option value="semantic">Semantic</option>
           <option value="hybrid">Hybrid</option>
-          <option value="multi-query">Multi-query</option>
-          <option value="hyde">HyDE</option>
         </select>
       </div>
 

@@ -15,7 +15,8 @@ const query = ref('')
 const collection = ref('documents')
 const topK = ref(5)
 const useReranker = ref(true)
-const searchMode = ref<'semantic' | 'hybrid'>('hybrid')
+const queryStrategy = ref<'direct' | 'multi-query' | 'hyde' | 'multi-query+hyde'>('direct')
+const retrievalMode = ref<'semantic' | 'hybrid'>('hybrid')
 const generate = ref(false)
 const results = ref<ChunkResult[]>([])
 const answer = ref<string | null>(null)
@@ -32,7 +33,8 @@ async function doSearch() {
   try {
     const { data } = await search(query.value, collection.value, topK.value, {
       useReranker: useReranker.value,
-      searchMode: searchMode.value,
+      searchMode: retrievalMode.value,
+      queryStrategy: queryStrategy.value,
       generate: generate.value,
     })
     results.value = data.results
@@ -101,17 +103,29 @@ function renderAnswer(text: string) {
         </select>
       </div>
 
-      <!-- Search mode -->
+      <!-- Query strategy -->
       <div class="space-y-1.5">
-        <label class="text-slate-500 text-xs">Chế độ tìm kiếm</label>
+        <label class="text-slate-500 text-xs">Chiến lược query</label>
         <select
-          v-model="searchMode"
+          v-model="queryStrategy"
+          class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-300 text-sm focus:outline-none focus:border-violet-500"
+        >
+          <option value="direct">Trực tiếp</option>
+          <option value="multi-query">Multi-query (LLM)</option>
+          <option value="hyde">HyDE (LLM)</option>
+          <option value="multi-query+hyde">Multi-query + HyDE (LLM)</option>
+        </select>
+      </div>
+
+      <!-- Retrieval mode -->
+      <div class="space-y-1.5">
+        <label class="text-slate-500 text-xs">Phương pháp search</label>
+        <select
+          v-model="retrievalMode"
           class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-slate-300 text-sm focus:outline-none focus:border-violet-500"
         >
           <option value="semantic">Semantic</option>
           <option value="hybrid">Hybrid (BM25 + Semantic)</option>
-          <option value="multi-query">Multi-query (LLM)</option>
-          <option value="hyde">HyDE (LLM)</option>
         </select>
       </div>
 

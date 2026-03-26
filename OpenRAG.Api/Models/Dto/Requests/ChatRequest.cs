@@ -7,6 +7,7 @@ public record ChatRequest(
     string Collection = "documents",
     Guid? SessionId = null,
     [Range(1, 100)] int TopK = 5,
-    bool UseReranker = false,
-    string SearchMode = "semantic"
+    bool UseReranker = true,
+    string SearchMode = "hybrid",
+    string QueryStrategy = "direct"
 );

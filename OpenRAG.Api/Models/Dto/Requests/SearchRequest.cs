@@ -7,6 +7,7 @@ public record SearchRequest(
     string Collection = "documents",
     [Range(1, 100)] int TopK = 5,
     bool UseReranker = false,
-    string SearchMode = "semantic",
+    string SearchMode = "hybrid",
+    string QueryStrategy = "direct",
     bool Generate = false
 );
