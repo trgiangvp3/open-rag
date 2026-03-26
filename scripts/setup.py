@@ -76,6 +76,10 @@ def skip(msg): print(f"  {dim('–')} Bỏ qua: {msg}")
 
 def run(cmd, env=None, cwd=None):
     merged = {**os.environ, **(env or {})}
+    # Resolve .cmd/.bat on Windows (e.g. npm.cmd, dotnet.cmd)
+    resolved = shutil.which(cmd[0])
+    if resolved:
+        cmd = [resolved] + cmd[1:]
     try:
         subprocess.run(cmd, env=merged, cwd=str(cwd or ROOT), check=True)
         return True

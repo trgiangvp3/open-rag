@@ -27,8 +27,8 @@ class Reranker:
     def __init__(self, model_name: str = RERANKER_MODEL, device: str = EMBEDDING_DEVICE):
         resolved = _resolve_device(device)
         logger.info("Loading reranker '%s' on %s ...", model_name, resolved)
-        from FlagEmbedding import FlagReranker
-        self.model = FlagReranker(model_name, use_fp16=(resolved != "cpu"), device=resolved)
+        from sentence_transformers import CrossEncoder
+        self.model = CrossEncoder(model_name, device=resolved)
         logger.info("Reranker ready.")
 
     def rerank(self, query: str, chunks: list[dict], top_k: int) -> list[dict]:
@@ -37,11 +37,7 @@ class Reranker:
             return []
 
         pairs = [(query, c["text"]) for c in chunks]
-        scores = self.model.compute_score(pairs, normalize=True)
-
-        # compute_score may return a single float when len==1
-        if isinstance(scores, float):
-            scores = [scores]
+        scores = self.model.predict(pairs)
 
         ranked = sorted(zip(chunks, scores), key=lambda x: x[1], reverse=True)
         return [

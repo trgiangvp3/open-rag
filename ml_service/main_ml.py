@@ -139,8 +139,8 @@ async def search(req: SearchRequest):
         top_k=semantic_top_k,
     )
 
-    # Convert to plain dicts for hybrid / reranker processing
-    raw = [{"text": r.text, "score": r.score, "metadata": r.metadata} for r in semantic_results]
+    # semantic_results is already list[dict] from store.search()
+    raw = semantic_results
 
     if req.search_mode == "hybrid":
         raw = await loop.run_in_executor(
