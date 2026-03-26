@@ -18,3 +18,4 @@ OpenRAG.Api/wwwroot/
 # IDE
 .vs/
 *.user
+.claude/worktrees/
