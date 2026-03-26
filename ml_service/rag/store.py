@@ -34,7 +34,7 @@ class VectorStore:
         texts: list[str],
         embeddings: list[list[float]],
         metadatas: list[dict],
-    ) -> None:
+    ) -> list[str]:
         collection = self.get_or_create_collection(collection_name)
         ids = [f"{document_id}_{i}" for i in range(len(texts))]
         indexed_at = datetime.now(timezone.utc).isoformat()
@@ -49,6 +49,7 @@ class VectorStore:
             metadatas=metadatas,
         )
         logger.info(f"Added {len(texts)} chunks to '{collection_name}' (doc: {document_id})")
+        return ids
 
     def search(
         self,
@@ -74,14 +75,14 @@ class VectorStore:
             })
         return items
 
-    def delete_document(self, collection_name: str, document_id: str) -> int:
+    def delete_document(self, collection_name: str, document_id: str) -> tuple[int, list[str]]:
         collection = self.get_or_create_collection(collection_name)
         results = collection.get(where={"document_id": document_id}, include=[])
         if results["ids"]:
             collection.delete(ids=results["ids"])
             logger.info(f"Deleted {len(results['ids'])} chunks for doc {document_id}")
-            return len(results["ids"])
-        return 0
+            return len(results["ids"]), results["ids"]
+        return 0, []
 
     def delete_collection(self, name: str) -> None:
         self.client.delete_collection(name)

@@ -29,3 +29,9 @@ CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "documents")
 # Server
 ML_HOST = os.getenv("ML_HOST", "0.0.0.0")
 ML_PORT = int(os.getenv("ML_PORT", "8001"))
+
+# ── BM25 (Tantivy) configuration ─────────────────────────────────────────
+BM25_INDEX_DIR = DATA_DIR / "bm25"
+BM25_INDEX_DIR.mkdir(parents=True, exist_ok=True)
+
+BM25_WRITER_HEAP_SIZE: int = int(os.getenv("BM25_WRITER_HEAP_SIZE", str(50_000_000)))
