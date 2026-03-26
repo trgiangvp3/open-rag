@@ -1,13 +1,51 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
+import * as signalR from '@microsoft/signalr'
 import { uploadFile, ingestText } from '../api'
 import { useCollectionsStore } from '../stores/collections'
 
 const store = useCollectionsStore()
 const collection = ref('documents')
 
-// File upload
-const files = ref<{ file: File; status: 'pending' | 'uploading' | 'done' | 'error'; message: string }[]>([])
+// ── SignalR progress ────────────────────────────────────────────────────────
+interface ProgressInfo { stage: string; progress: number }
+const progressMap = ref<Map<string, ProgressInfo>>(new Map())
+
+let hubConnection: signalR.HubConnection | null = null
+
+onMounted(async () => {
+  hubConnection = new signalR.HubConnectionBuilder()
+    .withUrl('/ws/progress')
+    .withAutomaticReconnect()
+    .build()
+
+  hubConnection.on('progress', (event: { documentId: string; stage: string; progress: number }) => {
+    progressMap.value = new Map(progressMap.value.set(event.documentId, {
+      stage: event.stage,
+      progress: event.progress,
+    }))
+  })
+
+  try {
+    await hubConnection.start()
+  } catch {
+    // silently ignore — progress bar just won't update in real-time
+  }
+})
+
+onUnmounted(async () => {
+  await hubConnection?.stop()
+})
+
+// ── File upload ─────────────────────────────────────────────────────────────
+interface FileEntry {
+  file: File
+  status: 'pending' | 'uploading' | 'done' | 'error'
+  message: string
+  documentId?: string
+}
+
+const files = ref<FileEntry[]>([])
 const dragging = ref(false)
 
 function onDrop(e: DragEvent) {
@@ -32,6 +70,7 @@ async function uploadAll() {
     item.status = 'uploading'
     try {
       const { data } = await uploadFile(item.file, collection.value)
+      item.documentId = data.documentId
       item.status = 'done'
       item.message = data.message
       store.fetch()
@@ -42,7 +81,16 @@ async function uploadAll() {
   }
 }
 
-// Text ingest
+function getProgress(item: FileEntry): ProgressInfo | null {
+  if (!item.documentId) return null
+  return progressMap.value.get(item.documentId) ?? null
+}
+
+function stageLabel(stage: string) {
+  return { converting: 'Đang chuyển đổi...', chunking: 'Đang phân đoạn...', embedding: 'Đang nhúng...', done: 'Hoàn thành', failed: 'Thất bại' }[stage] ?? stage
+}
+
+// ── Text ingest ─────────────────────────────────────────────────────────────
 const textTitle = ref('')
 const textContent = ref('')
 const textStatus = ref('')
@@ -66,10 +114,10 @@ async function submitText() {
 }
 
 const statusClass = (s: string) => ({
-  'pending': 'text-slate-400',
-  'uploading': 'text-yellow-400 animate-pulse',
-  'done': 'text-green-400',
-  'error': 'text-red-400',
+  pending: 'text-slate-400',
+  uploading: 'text-yellow-400 animate-pulse',
+  done: 'text-green-400',
+  error: 'text-red-400',
 }[s] ?? 'text-slate-400')
 </script>
 
@@ -96,11 +144,24 @@ const statusClass = (s: string) => ({
       </div>
 
       <div v-if="files.length" class="space-y-2">
-        <div v-for="(f, i) in files" :key="i" class="flex items-center justify-between bg-slate-800 rounded-lg px-3 py-2">
-          <span class="text-slate-300 text-sm truncate flex-1">{{ f.file.name }}</span>
-          <span :class="['text-xs ml-2', statusClass(f.status)]">
-            {{ f.status === 'done' ? f.message : f.status === 'error' ? f.message : f.status }}
-          </span>
+        <div v-for="(f, i) in files" :key="i" class="bg-slate-800 rounded-lg px-3 py-2 space-y-1">
+          <div class="flex items-center justify-between">
+            <span class="text-slate-300 text-sm truncate flex-1">{{ f.file.name }}</span>
+            <span :class="['text-xs ml-2', statusClass(f.status)]">
+              <template v-if="f.status === 'uploading' && getProgress(f)">
+                {{ stageLabel(getProgress(f)!.stage) }}
+              </template>
+              <template v-else-if="f.status === 'done' || f.status === 'error'">{{ f.message }}</template>
+              <template v-else>{{ f.status }}</template>
+            </span>
+          </div>
+          <!-- Progress bar -->
+          <div v-if="f.status === 'uploading'" class="w-full bg-slate-700 rounded-full h-1">
+            <div
+              class="bg-violet-500 h-1 rounded-full transition-all duration-300"
+              :style="{ width: `${getProgress(f)?.progress ?? 5}%` }"
+            />
+          </div>
         </div>
         <button
           @click="uploadAll"

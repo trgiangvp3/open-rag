@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using OpenRAG.Api.Data;
+using OpenRAG.Api.Hubs;
 using OpenRAG.Api.Services;
 using OpenRAG.Api.Services.Chunking;
 
@@ -17,15 +18,34 @@ builder.Services.AddHttpClient<MlClient>(client =>
     client.Timeout = TimeSpan.FromSeconds(300);
 });
 
+// ── LLM client (optional — only active when Llm:ApiKey is configured) ─────
+var llmBaseUrl = builder.Configuration["Llm:BaseUrl"];
+builder.Services.AddHttpClient<LlmClient>(client =>
+{
+    var baseUrl = string.IsNullOrWhiteSpace(llmBaseUrl) ? "http://localhost" : llmBaseUrl;
+    client.BaseAddress = new Uri(baseUrl);
+    var apiKey = builder.Configuration["Llm:ApiKey"];
+    if (!string.IsNullOrWhiteSpace(apiKey))
+        client.DefaultRequestHeaders.Add("Authorization", $"Bearer {apiKey}");
+    client.Timeout = TimeSpan.FromSeconds(120);
+});
+
 // ── Application services ──────────────────────────────────────────────────
 builder.Services.AddSingleton<MarkdownChunker>();
 builder.Services.AddScoped<DocumentService>();
 builder.Services.AddScoped<CollectionService>();
+builder.Services.AddScoped<ChatService>();
+
+// ── SignalR ───────────────────────────────────────────────────────────────
+builder.Services.AddSignalR();
 
 // ── Controllers + CORS ───────────────────────────────────────────────────
 builder.Services.AddControllers();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
-    p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
+    p.WithOrigins("http://localhost:5173", "http://localhost:8000")
+     .AllowAnyMethod()
+     .AllowAnyHeader()
+     .AllowCredentials()));
 
 var app = builder.Build();
 
@@ -43,6 +63,7 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 
 app.MapControllers();
+app.MapHub<ProgressHub>("/ws/progress");
 
 // ── SPA fallback (Vue Router history mode) ────────────────────────────────
 app.MapFallbackToFile("index.html");

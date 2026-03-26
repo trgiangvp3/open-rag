@@ -7,7 +7,7 @@ namespace OpenRAG.Api.Controllers;
 
 [ApiController]
 [Route("api/search")]
-public class SearchController(MlClient ml) : ControllerBase
+public class SearchController(MlClient ml, LlmClient llm) : ControllerBase
 {
     [HttpPost]
     public async Task<IActionResult> Search([FromBody] SearchRequest req, CancellationToken ct = default)
@@ -15,7 +15,14 @@ public class SearchController(MlClient ml) : ControllerBase
         if (string.IsNullOrWhiteSpace(req.Query))
             return BadRequest(new { detail = "Query is required" });
 
-        var results = await ml.SearchAsync(req.Query, req.Collection, req.TopK, ct);
+        var results = await ml.SearchAsync(req.Query, req.Collection, req.TopK, req.UseReranker, req.SearchMode, ct);
+
+        if (req.Generate && llm.IsEnabled)
+        {
+            var generated = await llm.GenerateAsync(req.Query, results, ct: ct);
+            return Ok(new SearchResponse(req.Query, results, results.Count, generated?.Answer, generated?.Citations));
+        }
+
         return Ok(new SearchResponse(req.Query, results, results.Count));
     }
 }

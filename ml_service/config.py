@@ -20,6 +20,9 @@ for d in [CHROMA_DIR, UPLOAD_DIR]:
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 EMBEDDING_DEVICE = os.getenv("EMBEDDING_DEVICE", "auto")  # auto | cpu | cuda
 
+# Reranker
+RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+
 # ChromaDB
 CHROMA_COLLECTION = os.getenv("CHROMA_COLLECTION", "documents")
 

@@ -21,8 +21,11 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from config import EMBEDDING_MODEL, ML_HOST, ML_PORT
 from rag.converter import convert_to_markdown
 from rag.embedder import get_embedder
+from rag.hybrid_search import HybridSearcher
+from rag.reranker import get_reranker
 from rag.store import VectorStore
 from schemas_ml import (
+    ChunkResult as CR,
     CollectionRequest,
     DeleteDocumentRequest,
     DeleteDocumentResponse,
@@ -38,14 +41,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 store: VectorStore
+hybrid_searcher: HybridSearcher
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global store
+    global store, hybrid_searcher
     logger.info("Starting ML service — pre-loading embedding model...")
     get_embedder()
+    get_reranker()
     store = VectorStore()
+    hybrid_searcher = HybridSearcher(store)
     logger.info("ML service ready.")
     yield
 
@@ -104,6 +110,7 @@ async def index_chunks(req: IndexRequest):
         embeddings=embeddings,
         metadatas=metadatas,
     )
+    hybrid_searcher.invalidate(req.collection)
 
     return IndexResponse(document_id=req.document_id, chunk_count=len(texts))
 
@@ -112,19 +119,41 @@ async def index_chunks(req: IndexRequest):
 
 @app.post("/ml/search", response_model=SearchResponse)
 async def search(req: SearchRequest):
-    """Embed query and search ChromaDB."""
+    """Embed query and search ChromaDB, with optional hybrid search and reranking."""
     embedder = get_embedder()
     loop = asyncio.get_event_loop()
     query_embedding = await loop.run_in_executor(
         None, lambda: embedder.embed_query(req.query)
     )
 
-    results = store.search(
+    # Determine how many semantic results to fetch before reranking / fusion
+    semantic_top_k = req.top_k * 10 if (req.use_reranker or req.search_mode == "hybrid") else req.top_k
+
+    semantic_results = store.search(
         collection_name=req.collection,
         query_embedding=query_embedding,
-        top_k=req.top_k,
+        top_k=semantic_top_k,
     )
 
+    # Convert to plain dicts for hybrid / reranker processing
+    raw = [{"text": r.text, "score": r.score, "metadata": r.metadata} for r in semantic_results]
+
+    if req.search_mode == "hybrid":
+        raw = await loop.run_in_executor(
+            None,
+            lambda: hybrid_searcher.hybrid_search(req.collection, req.query, raw, req.top_k),
+        )
+
+    if req.use_reranker:
+        reranker = get_reranker()
+        raw = await loop.run_in_executor(
+            None,
+            lambda: reranker.rerank(req.query, raw, req.top_k),
+        )
+    elif req.search_mode != "hybrid":
+        raw = raw[:req.top_k]
+
+    results = [CR(text=r["text"], score=r["score"], rerank_score=r.get("rerank_score"), metadata=r["metadata"]) for r in raw]
     return SearchResponse(results=results, total=len(results))
 
 
@@ -134,6 +163,7 @@ async def search(req: SearchRequest):
 async def delete_document(req: DeleteDocumentRequest):
     """Delete all chunks of a document from ChromaDB."""
     deleted = store.delete_document(req.collection, req.document_id)
+    hybrid_searcher.invalidate(req.collection)
     return DeleteDocumentResponse(chunks_deleted=deleted)
 
 

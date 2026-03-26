@@ -1,18 +1,31 @@
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using OpenRAG.Api.Data;
+using OpenRAG.Api.Hubs;
+using OpenRAG.Api.Models.Dto.Events;
 using OpenRAG.Api.Models.Dto.Responses;
 using OpenRAG.Api.Models.Entities;
 using OpenRAG.Api.Services.Chunking;
 
 namespace OpenRAG.Api.Services;
 
-public class DocumentService(AppDbContext db, MlClient ml, MarkdownChunker chunker, ILogger<DocumentService> logger)
+public class DocumentService(
+    AppDbContext db,
+    MlClient ml,
+    MarkdownChunker chunker,
+    IHubContext<ProgressHub> hub,
+    ILogger<DocumentService> logger)
 {
+    private Task ReportProgressAsync(string documentId, string stage, int progress) =>
+        hub.Clients.All.SendAsync("progress",
+            new ProgressEvent("progress", documentId, stage, progress));
+
     public async Task<IngestResponse> IngestFileAsync(
         Stream fileStream, string filename, string collection, long sizeBytes, CancellationToken ct = default)
     {
         var col = await GetOrCreateCollectionAsync(collection, ct);
         var documentId = Guid.NewGuid();
+        var docIdStr = documentId.ToString();
 
         var doc = new Document
         {
@@ -28,9 +41,11 @@ public class DocumentService(AppDbContext db, MlClient ml, MarkdownChunker chunk
         try
         {
             // Convert file → markdown
+            _ = ReportProgressAsync(docIdStr, "converting", 10);
             var markdown = await ml.ConvertFileAsync(fileStream, filename, ct);
 
             // Chunk in .NET
+            _ = ReportProgressAsync(docIdStr, "chunking", 35);
             var chunks = chunker.Chunk(markdown, new Dictionary<string, string> { ["filename"] = filename });
             logger.LogInformation("Chunked '{Filename}' into {Count} chunks", filename, chunks.Count);
 
@@ -40,20 +55,23 @@ public class DocumentService(AppDbContext db, MlClient ml, MarkdownChunker chunk
                 doc.ChunkCount = 0;
                 doc.IndexedAt = DateTime.UtcNow;
                 await db.SaveChangesAsync(ct);
-                return new IngestResponse(documentId.ToString(), filename, 0, "No content extracted");
+                _ = ReportProgressAsync(docIdStr, "done", 100);
+                return new IngestResponse(docIdStr, filename, 0, "No content extracted");
             }
 
             // Embed + store via ML service
+            _ = ReportProgressAsync(docIdStr, "embedding", 55);
             var mlChunks = chunks.Select(c => new MlChunkInput(c.Text, c.Metadata)).ToList();
             var result = await ml.IndexChunksAsync(
-                new MlIndexRequest(documentId.ToString(), collection, mlChunks), ct);
+                new MlIndexRequest(docIdStr, collection, mlChunks), ct);
 
             doc.Status = "indexed";
             doc.ChunkCount = result.ChunkCount;
             doc.IndexedAt = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
+            _ = ReportProgressAsync(docIdStr, "done", 100);
 
-            return new IngestResponse(documentId.ToString(), filename, result.ChunkCount,
+            return new IngestResponse(docIdStr, filename, result.ChunkCount,
                 $"Indexed {result.ChunkCount} chunks");
         }
         catch (Exception ex)
@@ -61,6 +79,7 @@ public class DocumentService(AppDbContext db, MlClient ml, MarkdownChunker chunk
             logger.LogError(ex, "Failed to ingest '{Filename}'", filename);
             doc.Status = "failed";
             await db.SaveChangesAsync(ct);
+            _ = ReportProgressAsync(docIdStr, "failed", 0);
             throw;
         }
     }
@@ -70,7 +89,9 @@ public class DocumentService(AppDbContext db, MlClient ml, MarkdownChunker chunk
     {
         var col = await GetOrCreateCollectionAsync(collection, ct);
         var documentId = Guid.NewGuid();
+        var docIdStr = documentId.ToString();
 
+        _ = ReportProgressAsync(docIdStr, "chunking", 35);
         var chunks = chunker.Chunk(text, new Dictionary<string, string> { ["filename"] = title });
 
         var doc = new Document
@@ -92,19 +113,22 @@ public class DocumentService(AppDbContext db, MlClient ml, MarkdownChunker chunk
                 doc.ChunkCount = 0;
                 doc.IndexedAt = DateTime.UtcNow;
                 await db.SaveChangesAsync(ct);
-                return new IngestResponse(documentId.ToString(), title, 0, "No content to index");
+                _ = ReportProgressAsync(docIdStr, "done", 100);
+                return new IngestResponse(docIdStr, title, 0, "No content to index");
             }
 
+            _ = ReportProgressAsync(docIdStr, "embedding", 55);
             var mlChunks = chunks.Select(c => new MlChunkInput(c.Text, c.Metadata)).ToList();
             var result = await ml.IndexChunksAsync(
-                new MlIndexRequest(documentId.ToString(), collection, mlChunks), ct);
+                new MlIndexRequest(docIdStr, collection, mlChunks), ct);
 
             doc.Status = "indexed";
             doc.ChunkCount = result.ChunkCount;
             doc.IndexedAt = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
+            _ = ReportProgressAsync(docIdStr, "done", 100);
 
-            return new IngestResponse(documentId.ToString(), title, result.ChunkCount,
+            return new IngestResponse(docIdStr, title, result.ChunkCount,
                 $"Indexed {result.ChunkCount} chunks");
         }
         catch (Exception ex)
@@ -112,6 +136,7 @@ public class DocumentService(AppDbContext db, MlClient ml, MarkdownChunker chunk
             logger.LogError(ex, "Failed to ingest text '{Title}'", title);
             doc.Status = "failed";
             await db.SaveChangesAsync(ct);
+            _ = ReportProgressAsync(docIdStr, "failed", 0);
             throw;
         }
     }

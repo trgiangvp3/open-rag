@@ -28,11 +28,14 @@ class SearchRequest(BaseModel):
     query: str
     collection: str
     top_k: int = 5
+    use_reranker: bool = False
+    search_mode: str = "semantic"  # "semantic" | "hybrid"
 
 
 class ChunkResult(BaseModel):
     text: str
     score: float
+    rerank_score: float | None = None
     metadata: dict
 
 

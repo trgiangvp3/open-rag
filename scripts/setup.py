@@ -45,6 +45,7 @@ DOTNET_API = ROOT / "OpenRAG.Api"
 
 PYTHON_MIN      = (3, 10)
 EMBEDDING_MODEL = "BAAI/bge-m3"
+RERANKER_MODEL  = "BAAI/bge-reranker-v2-m3"
 
 VENV_PYTHON = VENV / "Scripts" / "python.exe"
 VENV_PIP    = VENV / "Scripts" / "pip.exe"
@@ -174,7 +175,7 @@ def check_python():
 
 def check_disk():
     free_gb = shutil.disk_usage(ROOT).free / 1e9
-    needed  = 7.0   # torch ~1.5 GB + bge-m3 ~2.3 GB + misc
+    needed  = 8.0   # torch ~1.5 GB + bge-m3 ~2.3 GB + reranker ~0.6 GB + misc
     fn = ok if free_gb >= needed else warn
     fn(f"Ổ đĩa: {free_gb:.1f} GB trống  (cần ≈ {needed:.0f} GB)")
 
@@ -183,8 +184,8 @@ def check_ram():
         out = capture(["wmic", "OS", "get", "FreePhysicalMemory", "/Value"])
         m = re.search(r"FreePhysicalMemory=(\d+)", out)
         free_gb = int(m.group(1)) / 1e6 if m else 0
-        fn = ok if free_gb >= 4 else warn
-        fn(f"RAM trống: {free_gb:.1f} GB  (khuyến nghị ≥ 4 GB cho bge-m3)")
+        fn = ok if free_gb >= 8 else warn
+        fn(f"RAM trống: {free_gb:.1f} GB  (khuyến nghị ≥ 8 GB — bge-m3 + reranker)")
     except Exception:
         warn("Không đọc được thông tin RAM")
 
@@ -311,28 +312,50 @@ def install_npm(ok_flag):
     if run(["npm", "install", "--prefer-offline"], env=env, cwd=FRONTEND):
         ok("npm packages installed")
 
-def download_model(force=False):
+def _hf_cached(model_name: str) -> bool:
+    """Kiểm tra model đã có trong HF cache chưa (tìm theo tên thư mục)."""
     model_dir = HF_CACHE / "hub"
-    cached = any(model_dir.rglob("config.json")) if model_dir.exists() else False
-    if cached and not force:
-        ok(f"Model đã có trong cache  →  {model_dir}")
-        return
+    if not model_dir.exists():
+        return False
+    slug = model_name.replace("/", "--")
+    return any(model_dir.glob(f"models--{slug}"))
 
-    info(f"Tải {EMBEDDING_MODEL}  (~2.3 GB) — có thể mất vài phút...")
-    info(f"Cache: {HF_CACHE}")
 
-    script = (
-        f"import os; "
-        f"os.environ['HF_HOME'] = {str(HF_CACHE)!r}; "
-        "from sentence_transformers import SentenceTransformer; "
-        f"m = SentenceTransformer({EMBEDDING_MODEL!r}); "
-        "print('dim:', m.get_sentence_embedding_dimension())"
-    )
+def download_model(force=False):
+    """Tải embedding model (bge-m3) và reranker model (bge-reranker-v2-m3)."""
     env = {"HF_HOME": str(HF_CACHE)}
-    if run([str(VENV_PYTHON), "-c", script], env=env):
-        ok(f"Model {EMBEDDING_MODEL} ready")
+
+    # ── Embedding model ──────────────────────────────────────────────────
+    if _hf_cached(EMBEDDING_MODEL) and not force:
+        ok(f"Embedding model đã có trong cache  ({EMBEDDING_MODEL})")
     else:
-        warn("Tải model thất bại — thử lại: python scripts/setup.py model")
+        info(f"Tải {EMBEDDING_MODEL}  (~2.3 GB) — có thể mất vài phút...")
+        script = (
+            f"import os; os.environ['HF_HOME'] = {str(HF_CACHE)!r}; "
+            "from sentence_transformers import SentenceTransformer; "
+            f"m = SentenceTransformer({EMBEDDING_MODEL!r}); "
+            "print('dim:', m.get_sentence_embedding_dimension())"
+        )
+        if run([str(VENV_PYTHON), "-c", script], env=env):
+            ok(f"Embedding model ready  ({EMBEDDING_MODEL})")
+        else:
+            warn("Tải embedding model thất bại — thử lại: python scripts/setup.py model")
+
+    # ── Reranker model ───────────────────────────────────────────────────
+    if _hf_cached(RERANKER_MODEL) and not force:
+        ok(f"Reranker model đã có trong cache  ({RERANKER_MODEL})")
+    else:
+        info(f"Tải {RERANKER_MODEL}  (~560 MB)...")
+        script = (
+            f"import os; os.environ['HF_HOME'] = {str(HF_CACHE)!r}; "
+            "from FlagEmbedding import FlagReranker; "
+            f"r = FlagReranker({RERANKER_MODEL!r}, use_fp16=False); "
+            "print('reranker ready')"
+        )
+        if run([str(VENV_PYTHON), "-c", script], env=env):
+            ok(f"Reranker model ready  ({RERANKER_MODEL})")
+        else:
+            warn("Tải reranker model thất bại — thử lại: python scripts/setup.py model")
 
 # ── Summary ───────────────────────────────────────────────────────────────
 
@@ -376,7 +399,7 @@ def cmd_check():
     cache_sizes()
 
 def cmd_model(force=False):
-    header("Tải / cập nhật model")
+    header(f"Tải / cập nhật models  [{EMBEDDING_MODEL}  +  {RERANKER_MODEL}]")
     if not VENV_PYTHON.exists():
         fail("venv chưa tạo — chạy: python scripts/setup.py")
         sys.exit(1)
@@ -414,7 +437,7 @@ def cmd_full(skip_model=False, force=False):
     s("npm install  (frontend)")
     install_npm(node_ok)
 
-    s(f"Download model  [{EMBEDDING_MODEL}]")
+    s(f"Download models  [{EMBEDDING_MODEL}  +  {RERANKER_MODEL}]")
     if skip_model:
         skip("--skip-model")
     elif not has_net and not (HF_CACHE / "hub").exists():

@@ -6,8 +6,9 @@ import SearchTab from './components/SearchTab.vue'
 import UploadTab from './components/UploadTab.vue'
 import DocumentsTab from './components/DocumentsTab.vue'
 import CollectionsTab from './components/CollectionsTab.vue'
+import ChatTab from './components/ChatTab.vue'
 
-const tab = ref<'search' | 'upload' | 'documents' | 'collections'>('search')
+const tab = ref<'search' | 'upload' | 'documents' | 'collections' | 'chat'>('search')
 const healthy = ref<boolean | null>(null)
 const store = useCollectionsStore()
 
@@ -23,6 +24,7 @@ onMounted(async () => {
 
 const tabs = [
   { id: 'search', label: 'Tìm kiếm' },
+  { id: 'chat', label: 'Chat' },
   { id: 'upload', label: 'Upload' },
   { id: 'documents', label: 'Tài liệu' },
   { id: 'collections', label: 'Collections' },
@@ -65,6 +67,7 @@ const tabs = [
     <!-- Content -->
     <main class="max-w-5xl mx-auto px-6 py-6">
       <SearchTab v-if="tab === 'search'" />
+      <ChatTab v-else-if="tab === 'chat'" />
       <UploadTab v-else-if="tab === 'upload'" />
       <DocumentsTab v-else-if="tab === 'documents'" />
       <CollectionsTab v-else-if="tab === 'collections'" />

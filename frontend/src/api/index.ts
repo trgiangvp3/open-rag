@@ -7,6 +7,7 @@ export const api = axios.create({ baseURL: '/api' })
 export interface ChunkResult {
   text: string
   score: number
+  rerankScore?: number
   metadata: Record<string, string>
 }
 
@@ -14,6 +15,8 @@ export interface SearchResponse {
   query: string
   results: ChunkResult[]
   total: number
+  answer?: string
+  citations?: number[]
 }
 
 export interface DocumentInfo {
@@ -48,10 +51,32 @@ export interface StatusResponse {
   message: string
 }
 
+export interface SearchOptions {
+  useReranker?: boolean
+  searchMode?: 'semantic' | 'hybrid'
+  generate?: boolean
+}
+
+export interface ChatRequest {
+  query: string
+  collection?: string
+  sessionId?: string
+  topK?: number
+  useReranker?: boolean
+  searchMode?: string
+}
+
+export interface ChatResponse {
+  sessionId: string
+  answer?: string
+  citations?: number[]
+  chunks: ChunkResult[]
+}
+
 // ── Search ─────────────────────────────────────────────────────────────────
 
-export const search = (query: string, collection: string, topK: number) =>
-  api.post<SearchResponse>('/search', { query, collection, topK })
+export const search = (query: string, collection: string, topK: number, opts: SearchOptions = {}) =>
+  api.post<SearchResponse>('/search', { query, collection, topK, ...opts })
 
 // ── Documents ──────────────────────────────────────────────────────────────
 
@@ -91,3 +116,14 @@ export const deleteCollection = (name: string) =>
 
 export const health = () =>
   api.get<{ status: string }>('/health')
+
+// ── Chat ───────────────────────────────────────────────────────────────────
+
+export const chat = (req: ChatRequest) =>
+  api.post<ChatResponse>('/chat', req)
+
+export const getChatHistory = (sessionId: string) =>
+  api.get<{ role: string; content: string }[]>(`/chat/${sessionId}/history`)
+
+export const deleteChatSession = (sessionId: string) =>
+  api.delete(`/chat/${sessionId}`)

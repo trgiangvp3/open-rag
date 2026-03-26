@@ -7,7 +7,7 @@ namespace OpenRAG.Api.Services;
 public record MlChunkInput(string Text, Dictionary<string, string> Metadata);
 public record MlIndexRequest(string DocumentId, string Collection, List<MlChunkInput> Chunks);
 public record MlIndexResponse(string DocumentId, int ChunkCount, bool Ok);
-public record MlSearchRequest(string Query, string Collection, int TopK = 5);
+public record MlSearchRequest(string Query, string Collection, int TopK = 5, bool UseReranker = false, string SearchMode = "semantic");
 public record MlDeleteDocRequest(string DocumentId, string Collection);
 public record MlDeleteDocResponse(int ChunksDeleted, bool Ok);
 public record MlCollectionRequest(string Name);
@@ -41,9 +41,13 @@ public class MlClient(HttpClient http, ILogger<MlClient> logger)
                ?? throw new InvalidOperationException("Empty response from ML service");
     }
 
-    public async Task<List<ChunkResult>> SearchAsync(string query, string collection, int topK, CancellationToken ct = default)
+    public async Task<List<ChunkResult>> SearchAsync(
+        string query, string collection, int topK,
+        bool useReranker = false, string searchMode = "semantic",
+        CancellationToken ct = default)
     {
-        var response = await http.PostAsJsonAsync("/ml/search", new MlSearchRequest(query, collection, topK), JsonOpts, ct);
+        var req = new MlSearchRequest(query, collection, topK, useReranker, searchMode);
+        var response = await http.PostAsJsonAsync("/ml/search", req, JsonOpts, ct);
         response.EnsureSuccessStatusCode();
 
         var result = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
@@ -53,10 +57,13 @@ public class MlClient(HttpClient http, ILogger<MlClient> logger)
         {
             var text = item.GetProperty("text").GetString() ?? "";
             var score = item.GetProperty("score").GetDouble();
+            double? rerankScore = null;
+            if (item.TryGetProperty("rerank_score", out var rs) && rs.ValueKind != JsonValueKind.Null)
+                rerankScore = rs.GetDouble();
             var meta = new Dictionary<string, object>();
             foreach (var prop in item.GetProperty("metadata").EnumerateObject())
                 meta[prop.Name] = prop.Value.ToString();
-            results.Add(new ChunkResult(text, score, meta));
+            results.Add(new ChunkResult(text, score, meta, rerankScore));
         }
 
         return results;
