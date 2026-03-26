@@ -554,9 +554,27 @@ public class MarkdownChunker
     private string GetOverlapText(string text)
     {
         if (_chunkOverlap <= 0) return "";
-        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (words.Length <= _chunkOverlap) return text;
-        return string.Join(' ', words[^_chunkOverlap..]);
+
+        // Split into sentences, take last N sentences that fit within overlap token budget
+        var sentences = SentenceSplitPattern.Split(text)
+            .Select(s => s.Trim())
+            .Where(s => !string.IsNullOrEmpty(s))
+            .ToList();
+
+        if (sentences.Count == 0) return "";
+
+        // Walk backwards, accumulate sentences until overlap budget reached
+        var overlap = new List<string>();
+        var tokens = 0;
+        for (int i = sentences.Count - 1; i >= 0; i--)
+        {
+            var sentTokens = CountTokens(sentences[i]);
+            if (tokens + sentTokens > _chunkOverlap && overlap.Count > 0) break;
+            overlap.Insert(0, sentences[i]);
+            tokens += sentTokens;
+        }
+
+        return string.Join(" ", overlap);
     }
 
     private int CountTokens(string text) => _encoding.Encode(text).Count;

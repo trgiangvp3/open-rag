@@ -98,6 +98,19 @@ const totalChunks = computed(() => documents.value.reduce((sum, d) => sum + d.ch
 
 // ── Selection ───────────────────────────────────────────────────────────────
 
+const allSelected = computed(() =>
+  filtered.value.length > 0 && filtered.value.every(d => selectedIds.value.has(d.id))
+)
+
+function toggleAll() {
+  if (allSelected.value) {
+    selectedIds.value.clear()
+  } else {
+    selectedIds.value = new Set(filtered.value.map(d => d.id))
+  }
+  selectedIds.value = new Set(selectedIds.value)
+}
+
 function toggleOne(id: string) {
   if (selectedIds.value.has(id)) selectedIds.value.delete(id)
   else selectedIds.value.add(id)
@@ -222,6 +235,11 @@ function sortIndicator(field: string) {
 
     <!-- Col 2: Document list -->
     <div class="w-72 flex-shrink-0 border-r border-slate-700 flex flex-col">
+      <!-- Select all header -->
+      <div v-if="filtered.length > 0" class="px-3 py-2 border-b border-slate-800 flex items-center gap-2">
+        <input type="checkbox" :checked="allSelected" @change="toggleAll" class="accent-violet-500" />
+        <span class="text-slate-500 text-xs">Chọn tất cả ({{ filtered.length }})</span>
+      </div>
       <div v-if="loading" class="flex-1 flex items-center justify-center text-slate-500 text-sm">Đang tải...</div>
       <div v-else-if="filtered.length === 0" class="flex-1 flex items-center justify-center text-slate-600 text-xs px-3 text-center">
         {{ searchFilter ? 'Không tìm thấy' : 'Chưa có tài liệu' }}

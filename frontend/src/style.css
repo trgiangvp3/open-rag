@@ -1,2 +1,31 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
+
+/* Hide scrollbar on main page — only show inside scrollable panels */
+body {
+  overflow: hidden;
+}
+
+/* Slim scrollbar for scrollable panels */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #334155 transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 3px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
