@@ -17,19 +17,14 @@ builder.Services.AddHttpClient<MlClient>(client =>
     client.Timeout = TimeSpan.FromSeconds(300);
 });
 
-// ── LLM client (optional — only active when Llm:ApiKey is configured) ─────
-var llmBaseUrl = builder.Configuration["Llm:BaseUrl"];
+// ── LLM client (reads config from DB via AppSettingsService) ──────────────
 builder.Services.AddHttpClient<LlmClient>(client =>
 {
-    var baseUrl = string.IsNullOrWhiteSpace(llmBaseUrl) ? "http://localhost" : llmBaseUrl;
-    client.BaseAddress = new Uri(baseUrl);
-    var apiKey = builder.Configuration["Llm:ApiKey"];
-    if (!string.IsNullOrWhiteSpace(apiKey))
-        client.DefaultRequestHeaders.Add("Authorization", $"Bearer {apiKey}");
     client.Timeout = TimeSpan.FromSeconds(120);
 });
 
 // ── Application services ──────────────────────────────────────────────────
+builder.Services.AddScoped<AppSettingsService>();
 builder.Services.AddScoped<DocumentService>();
 builder.Services.AddScoped<CollectionService>();
 builder.Services.AddScoped<ChatService>();

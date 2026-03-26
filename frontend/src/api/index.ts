@@ -181,3 +181,8 @@ export const getChatHistory = (sessionId: string) =>
 
 export const deleteChatSession = (sessionId: string) =>
   api.delete(`/chat/${sessionId}`)
+
+// ── Settings ──────────────────────────────────────────────────────────────
+
+export const getSettings = () => api.get<Record<string, string>>('/settings')
+export const updateSettings = (settings: Record<string, string>) => api.put<{ ok: boolean }>('/settings', settings)

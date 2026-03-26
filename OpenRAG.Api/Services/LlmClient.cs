@@ -9,9 +9,16 @@ namespace OpenRAG.Api.Services;
 
 public record GenerateResult(string Answer, List<int> Citations);
 
-public class LlmClient(HttpClient http, IConfiguration config, ILogger<LlmClient> logger)
+public class LlmClient(HttpClient http, AppSettingsService appSettings, ILogger<LlmClient> logger)
 {
-    public bool IsEnabled => !string.IsNullOrWhiteSpace(config["Llm:ApiKey"]);
+    public bool IsEnabled
+    {
+        get
+        {
+            var apiKey = appSettings.GetAsync("Llm:ApiKey").GetAwaiter().GetResult();
+            return !string.IsNullOrWhiteSpace(apiKey);
+        }
+    }
 
     /// <summary>
     /// Generate an answer from retrieved chunks, optionally including conversation history.
@@ -23,7 +30,21 @@ public class LlmClient(HttpClient http, IConfiguration config, ILogger<LlmClient
         List<ChatMessage>? history = null,
         CancellationToken ct = default)
     {
-        if (!IsEnabled) return null;
+        var settings = await appSettings.GetAllAsync(ct);
+
+        var apiKey = settings.GetValueOrDefault("Llm:ApiKey", "");
+        if (string.IsNullOrWhiteSpace(apiKey)) return null;
+
+        var baseUrl = settings.GetValueOrDefault("Llm:BaseUrl", "");
+        var model = settings.GetValueOrDefault("Llm:Model", "gpt-4o-mini");
+        var temperatureStr = settings.GetValueOrDefault("Llm:Temperature", "0.2");
+        var maxTokensStr = settings.GetValueOrDefault("Llm:MaxTokens", "2048");
+        var customSystemPrompt = settings.GetValueOrDefault("Llm:SystemPrompt", "");
+
+        if (!double.TryParse(temperatureStr, System.Globalization.CultureInfo.InvariantCulture, out var temperature))
+            temperature = 0.2;
+        if (!int.TryParse(maxTokensStr, out var maxTokens))
+            maxTokens = 2048;
 
         // Cap chunks to avoid exceeding model context limits
         var contextChunks = chunks.Take(8).ToList();
@@ -32,14 +53,21 @@ public class LlmClient(HttpClient http, IConfiguration config, ILogger<LlmClient
         for (int i = 0; i < contextChunks.Count; i++)
             contextBuilder.AppendLine($"[{i + 1}] {contextChunks[i].Text}");
 
-        var systemPrompt = $"""
-            You are a helpful assistant. Answer the user's question based solely on the provided context.
-            When referencing information from the context, cite the source number like [1], [2], etc.
-            If the context does not contain enough information to answer, say so clearly.
+        var systemPrompt = string.IsNullOrWhiteSpace(customSystemPrompt)
+            ? $"""
+                You are a helpful assistant. Answer the user's question based solely on the provided context.
+                When referencing information from the context, cite the source number like [1], [2], etc.
+                If the context does not contain enough information to answer, say so clearly.
 
-            Context:
-            {contextBuilder}
-            """;
+                Context:
+                {contextBuilder}
+                """
+            : $"""
+                {customSystemPrompt}
+
+                Context:
+                {contextBuilder}
+                """;
 
         var messages = new List<object> { new { role = "system", content = systemPrompt } };
 
@@ -51,14 +79,24 @@ public class LlmClient(HttpClient http, IConfiguration config, ILogger<LlmClient
 
         var requestBody = new
         {
-            model = config["Llm:Model"] ?? "gpt-4o-mini",
+            model,
             messages,
-            temperature = 0.2,
+            temperature,
+            max_tokens = maxTokens,
         };
 
         try
         {
-            var response = await http.PostAsJsonAsync("/chat/completions", requestBody, ct);
+            // Build the full URL per-request since BaseUrl is dynamic
+            var requestUrl = string.IsNullOrWhiteSpace(baseUrl)
+                ? "/chat/completions"
+                : $"{baseUrl.TrimEnd('/')}/chat/completions";
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, requestUrl);
+            request.Content = JsonContent.Create(requestBody);
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+
+            var response = await http.SendAsync(request, ct);
             response.EnsureSuccessStatusCode();
 
             var result = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
@@ -68,7 +106,7 @@ public class LlmClient(HttpClient http, IConfiguration config, ILogger<LlmClient
                 .GetProperty("content")
                 .GetString() ?? "";
 
-            // Extract citation indices [1], [2] → 0-based
+            // Extract citation indices [1], [2] -> 0-based
             var citations = Regex.Matches(answerText, @"\[(\d+)\]")
                 .Select(m => int.Parse(m.Groups[1].Value) - 1)
                 .Where(i => i >= 0 && i < contextChunks.Count)

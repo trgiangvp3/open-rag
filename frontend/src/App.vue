@@ -7,8 +7,9 @@ import UploadTab from './components/UploadTab.vue'
 import DocumentsTab from './components/DocumentsTab.vue'
 import CollectionsTab from './components/CollectionsTab.vue'
 import ChatTab from './components/ChatTab.vue'
+import SettingsTab from './components/SettingsTab.vue'
 
-const tab = ref<'search' | 'upload' | 'documents' | 'collections' | 'chat'>('search')
+const tab = ref<'search' | 'upload' | 'documents' | 'collections' | 'chat' | 'settings'>('search')
 const healthy = ref<boolean | null>(null)
 const store = useCollectionsStore()
 
@@ -28,6 +29,7 @@ const tabs = [
   { id: 'upload', label: 'Upload' },
   { id: 'documents', label: 'Tài liệu' },
   { id: 'collections', label: 'Collections' },
+  { id: 'settings', label: 'Cài đặt' },
 ] as const
 </script>
 
@@ -71,6 +73,7 @@ const tabs = [
       <UploadTab v-else-if="tab === 'upload'" />
       <DocumentsTab v-else-if="tab === 'documents'" />
       <CollectionsTab v-else-if="tab === 'collections'" />
+      <SettingsTab v-else-if="tab === 'settings'" />
     </main>
   </div>
 </template>
