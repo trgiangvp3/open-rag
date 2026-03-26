@@ -115,12 +115,17 @@ async def index_chunks(req: IndexRequest):
         embeddings=embeddings,
         metadatas=metadatas,
     )
-    hybrid_searcher.add_chunks(
-        collection_name=req.collection,
-        chunk_ids=chunk_ids,
-        texts=texts,
-        metadatas=metadatas,
-    )
+    try:
+        hybrid_searcher.add_chunks(
+            collection_name=req.collection,
+            chunk_ids=chunk_ids,
+            texts=texts,
+            metadatas=metadatas,
+        )
+    except Exception:
+        # BM25 index failure is non-fatal — ChromaDB already has the data.
+        # Use /ml/bm25/rebuild to recover later.
+        logger.warning("BM25 index failed for doc %s, ChromaDB OK", req.document_id)
 
     return IndexResponse(document_id=req.document_id, chunk_count=len(texts))
 
@@ -198,7 +203,10 @@ async def get_document_chunks(document_id: str, collection: str = "documents"):
 async def delete_document(req: DeleteDocumentRequest):
     """Delete all chunks of a document from ChromaDB."""
     deleted_count, deleted_ids = store.delete_document(req.collection, req.document_id)
-    hybrid_searcher.mark_deleted(collection_name=req.collection, chunk_ids=deleted_ids)
+    try:
+        hybrid_searcher.mark_deleted(collection_name=req.collection, chunk_ids=deleted_ids)
+    except Exception:
+        logger.warning("BM25 delete failed for doc %s, ChromaDB OK", req.document_id)
     return DeleteDocumentResponse(chunks_deleted=deleted_count)
 
 

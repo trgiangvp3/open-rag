@@ -81,12 +81,15 @@ interface QueueItem {
   status: ItemStatus
   message: string
   documentId?: string
+  retries: number
 }
 
+const MAX_RETRIES = 3
 let nextId = 0
 const queue = ref<QueueItem[]>([])
 const dragging = ref(false)
 const processing = ref(false)
+const retryRound = ref(0)
 
 // Text input form
 const textTitle = ref('')
@@ -115,6 +118,7 @@ function addFiles(newFiles: File[]) {
       file: f,
       status: 'pending',
       message: '',
+      retries: 0,
     })
   }
 }
@@ -131,6 +135,7 @@ function addText() {
     textContent: content,
     status: 'pending',
     message: '',
+    retries: 0,
   })
   textTitle.value = ''
   textContent.value = ''
@@ -144,28 +149,57 @@ function clearDone() {
   queue.value = queue.value.filter(q => q.status !== 'done' && q.status !== 'error')
 }
 
+async function processItem(item: QueueItem) {
+  item.status = 'uploading'
+  item.message = ''
+  try {
+    if (item.type === 'file' && item.file) {
+      const { data } = await uploadFile(item.file, collection.value)
+      item.documentId = data.documentId
+      item.message = data.message
+    } else if (item.type === 'text' && item.textContent) {
+      const { data } = await ingestText(item.textContent, item.textTitle || 'untitled', collection.value)
+      item.documentId = data.documentId
+      item.message = data.message
+    }
+    item.status = 'done'
+  } catch (e: any) {
+    item.status = 'error'
+    item.retries++
+    item.message = e.response?.data?.detail ?? e.message
+  }
+}
+
 async function startAll() {
   processing.value = true
+  retryRound.value = 0
   await ensureHub()
-  for (const item of queue.value.filter(q => q.status === 'pending')) {
-    item.status = 'uploading'
-    try {
-      if (item.type === 'file' && item.file) {
-        const { data } = await uploadFile(item.file, collection.value)
-        item.documentId = data.documentId
-        item.message = data.message
-      } else if (item.type === 'text' && item.textContent) {
-        const { data } = await ingestText(item.textContent, item.textTitle || 'untitled', collection.value)
-        item.documentId = data.documentId
-        item.message = data.message
-      }
-      item.status = 'done'
-    } catch (e: any) {
-      item.status = 'error'
-      item.message = e.response?.data?.detail ?? e.message
+
+  // Vòng đầu: xử lý tất cả pending
+  const pending = queue.value.filter(q => q.status === 'pending')
+  for (const item of pending) {
+    await processItem(item)
+  }
+
+  // Vòng retry: tự động retry các file lỗi
+  while (true) {
+    const errors = queue.value.filter(q => q.status === 'error' && q.retries < MAX_RETRIES)
+    if (errors.length === 0) break
+
+    retryRound.value++
+    for (const item of errors) {
+      item.message = `Thử lại lần ${item.retries + 1}/${MAX_RETRIES}...`
+      await processItem(item)
     }
   }
+
+  // Đánh dấu các file hết retry
+  for (const item of queue.value.filter(q => q.status === 'error' && q.retries >= MAX_RETRIES)) {
+    item.message = `Thất bại sau ${MAX_RETRIES} lần thử: ${item.message}`
+  }
+
   processing.value = false
+  retryRound.value = 0
   store.fetch()
 }
 
@@ -325,7 +359,7 @@ const typeIcon = (t: string) => t === 'file' ? '&#128196;' : '&#128221;'
         :disabled="!hasPending || processing"
         class="mt-3 w-full py-2.5 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 rounded-lg text-white font-medium transition-colors"
       >
-        {{ processing ? 'Đang xử lý...' : 'Bắt đầu xử lý' }}
+        {{ processing ? (retryRound > 0 ? `Thử lại lần ${retryRound}...` : 'Đang xử lý...') : 'Bắt đầu xử lý' }}
       </button>
     </div>
 
