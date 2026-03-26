@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, nextTick, onMounted } from 'vue'
-import { chat, getChatHistory, deleteChatSession, type ChunkResult } from '../api'
+import { chat, getChatHistory, deleteChatSession, type ChunkResult, type ChatHistoryResponse } from '../api'
 import { useCollectionsStore } from '../stores/collections'
 
 const store = useCollectionsStore()
@@ -30,7 +30,7 @@ onMounted(async () => {
   if (sessionId.value) {
     try {
       const { data } = await getChatHistory(sessionId.value)
-      messages.value = data.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+      messages.value = data.messages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
     } catch {
       // Session may have been deleted — start fresh
       sessionId.value = null

@@ -122,8 +122,13 @@ export const health = () =>
 export const chat = (req: ChatRequest) =>
   api.post<ChatResponse>('/chat', req)
 
+export interface ChatHistoryResponse {
+  sessionId: string
+  messages: { role: string; content: string }[]
+}
+
 export const getChatHistory = (sessionId: string) =>
-  api.get<{ role: string; content: string }[]>(`/chat/${sessionId}/history`)
+  api.get<ChatHistoryResponse>(`/chat/${sessionId}/history`)
 
 export const deleteChatSession = (sessionId: string) =>
   api.delete(`/chat/${sessionId}`)

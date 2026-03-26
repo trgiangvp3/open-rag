@@ -16,9 +16,12 @@ public class DocumentService(
     IHubContext<ProgressHub> hub,
     ILogger<DocumentService> logger)
 {
-    private Task ReportProgressAsync(string documentId, string stage, int progress) =>
+    private void ReportProgress(string documentId, string stage, int progress) =>
         hub.Clients.All.SendAsync("progress",
-            new ProgressEvent("progress", documentId, stage, progress));
+            new ProgressEvent("progress", documentId, stage, progress))
+            .ContinueWith(
+                t => logger.LogWarning(t.Exception, "Failed to send progress event for {DocumentId}", documentId),
+                TaskContinuationOptions.OnlyOnFaulted);
 
     public async Task<IngestResponse> IngestFileAsync(
         Stream fileStream, string filename, string collection, long sizeBytes, CancellationToken ct = default)
@@ -41,11 +44,11 @@ public class DocumentService(
         try
         {
             // Convert file → markdown
-            _ = ReportProgressAsync(docIdStr, "converting", 10);
+            ReportProgress(docIdStr, "converting", 10);
             var markdown = await ml.ConvertFileAsync(fileStream, filename, ct);
 
             // Chunk in .NET
-            _ = ReportProgressAsync(docIdStr, "chunking", 35);
+            ReportProgress(docIdStr, "chunking", 35);
             var chunks = chunker.Chunk(markdown, new Dictionary<string, string> { ["filename"] = filename });
             logger.LogInformation("Chunked '{Filename}' into {Count} chunks", filename, chunks.Count);
 
@@ -55,12 +58,12 @@ public class DocumentService(
                 doc.ChunkCount = 0;
                 doc.IndexedAt = DateTime.UtcNow;
                 await db.SaveChangesAsync(ct);
-                _ = ReportProgressAsync(docIdStr, "done", 100);
+                ReportProgress(docIdStr, "done", 100);
                 return new IngestResponse(docIdStr, filename, 0, "No content extracted");
             }
 
             // Embed + store via ML service
-            _ = ReportProgressAsync(docIdStr, "embedding", 55);
+            ReportProgress(docIdStr, "embedding", 55);
             var mlChunks = chunks.Select(c => new MlChunkInput(c.Text, c.Metadata)).ToList();
             var result = await ml.IndexChunksAsync(
                 new MlIndexRequest(docIdStr, collection, mlChunks), ct);
@@ -69,7 +72,7 @@ public class DocumentService(
             doc.ChunkCount = result.ChunkCount;
             doc.IndexedAt = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
-            _ = ReportProgressAsync(docIdStr, "done", 100);
+            ReportProgress(docIdStr, "done", 100);
 
             return new IngestResponse(docIdStr, filename, result.ChunkCount,
                 $"Indexed {result.ChunkCount} chunks");
@@ -79,7 +82,7 @@ public class DocumentService(
             logger.LogError(ex, "Failed to ingest '{Filename}'", filename);
             doc.Status = "failed";
             await db.SaveChangesAsync(ct);
-            _ = ReportProgressAsync(docIdStr, "failed", 0);
+            ReportProgress(docIdStr, "failed", 0);
             throw;
         }
     }
@@ -91,7 +94,7 @@ public class DocumentService(
         var documentId = Guid.NewGuid();
         var docIdStr = documentId.ToString();
 
-        _ = ReportProgressAsync(docIdStr, "chunking", 35);
+        ReportProgress(docIdStr, "chunking", 35);
         var chunks = chunker.Chunk(text, new Dictionary<string, string> { ["filename"] = title });
 
         var doc = new Document
@@ -113,11 +116,11 @@ public class DocumentService(
                 doc.ChunkCount = 0;
                 doc.IndexedAt = DateTime.UtcNow;
                 await db.SaveChangesAsync(ct);
-                _ = ReportProgressAsync(docIdStr, "done", 100);
+                ReportProgress(docIdStr, "done", 100);
                 return new IngestResponse(docIdStr, title, 0, "No content to index");
             }
 
-            _ = ReportProgressAsync(docIdStr, "embedding", 55);
+            ReportProgress(docIdStr, "embedding", 55);
             var mlChunks = chunks.Select(c => new MlChunkInput(c.Text, c.Metadata)).ToList();
             var result = await ml.IndexChunksAsync(
                 new MlIndexRequest(docIdStr, collection, mlChunks), ct);
@@ -126,7 +129,7 @@ public class DocumentService(
             doc.ChunkCount = result.ChunkCount;
             doc.IndexedAt = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
-            _ = ReportProgressAsync(docIdStr, "done", 100);
+            ReportProgress(docIdStr, "done", 100);
 
             return new IngestResponse(docIdStr, title, result.ChunkCount,
                 $"Indexed {result.ChunkCount} chunks");
@@ -136,7 +139,7 @@ public class DocumentService(
             logger.LogError(ex, "Failed to ingest text '{Title}'", title);
             doc.Status = "failed";
             await db.SaveChangesAsync(ct);
-            _ = ReportProgressAsync(docIdStr, "failed", 0);
+            ReportProgress(docIdStr, "failed", 0);
             throw;
         }
     }

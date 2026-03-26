@@ -85,12 +85,12 @@ class HybridSearcher:
         text_to_chunk: dict[str, dict] = {}
 
         for rank, chunk in enumerate(semantic_results):
-            key = chunk["text"][:200]
+            key = chunk["text"]
             rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (k + rank + 1)
             text_to_chunk[key] = chunk
 
         for rank, chunk in enumerate(bm25_results):
-            key = chunk["text"][:200]
+            key = chunk["text"]
             rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (k + rank + 1)
             if key not in text_to_chunk:
                 text_to_chunk[key] = chunk
