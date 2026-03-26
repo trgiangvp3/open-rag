@@ -25,6 +25,7 @@ from rag.hybrid_search import HybridSearcher
 from rag.reranker import get_reranker
 from rag.store import VectorStore
 from schemas_ml import (
+    BM25StatsResponse,
     ChunkResult as CR,
     CollectionRequest,
     DeleteDocumentRequest,
@@ -51,7 +52,7 @@ async def lifespan(app: FastAPI):
     get_embedder()
     get_reranker()
     store = VectorStore()
-    hybrid_searcher = HybridSearcher(store)
+    hybrid_searcher = HybridSearcher()
     logger.info("ML service ready.")
     yield
 
@@ -107,14 +108,19 @@ async def index_chunks(req: IndexRequest):
     )
 
     store.get_or_create_collection(req.collection)
-    store.add_chunks(
+    chunk_ids = store.add_chunks(
         collection_name=req.collection,
         document_id=req.document_id,
         texts=texts,
         embeddings=embeddings,
         metadatas=metadatas,
     )
-    hybrid_searcher.invalidate(req.collection)
+    hybrid_searcher.add_chunks(
+        collection_name=req.collection,
+        chunk_ids=chunk_ids,
+        texts=texts,
+        metadatas=metadatas,
+    )
 
     return IndexResponse(document_id=req.document_id, chunk_count=len(texts))
 
@@ -166,9 +172,9 @@ async def search(req: SearchRequest):
 @app.post("/ml/documents/delete", response_model=DeleteDocumentResponse)
 async def delete_document(req: DeleteDocumentRequest):
     """Delete all chunks of a document from ChromaDB."""
-    deleted = store.delete_document(req.collection, req.document_id)
-    hybrid_searcher.invalidate(req.collection)
-    return DeleteDocumentResponse(chunks_deleted=deleted)
+    deleted_count, deleted_ids = store.delete_document(req.collection, req.document_id)
+    hybrid_searcher.mark_deleted(collection_name=req.collection, chunk_ids=deleted_ids)
+    return DeleteDocumentResponse(chunks_deleted=deleted_count)
 
 
 # ── Collections ──────────────────────────────────────────────────────────────
@@ -187,7 +193,36 @@ async def delete_collection(req: CollectionRequest):
         store.delete_collection(req.name)
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
+    hybrid_searcher.delete_collection(req.name)
     return OkResponse()
+
+
+# ── BM25 management ──────────────────────────────────────────────────────
+
+@app.post("/ml/bm25/rebuild", response_model=OkResponse)
+async def bm25_rebuild(req: CollectionRequest):
+    """Rebuild the BM25 index for a collection from ChromaDB data."""
+    collection = store.get_or_create_collection(req.name)
+    result = collection.get(include=["documents", "metadatas"])
+    ids: list[str] = result.get("ids") or []
+    texts: list[str] = result.get("documents") or []
+    metadatas: list[dict] = result.get("metadatas") or []
+
+    hybrid_searcher.delete_collection(req.name)
+    if ids:
+        hybrid_searcher.add_chunks(
+            collection_name=req.name,
+            chunk_ids=ids,
+            texts=texts,
+            metadatas=metadatas,
+        )
+    return OkResponse()
+
+
+@app.get("/ml/bm25/stats", response_model=BM25StatsResponse)
+async def bm25_stats():
+    """Return BM25 index statistics for all collections."""
+    return BM25StatsResponse(collections=hybrid_searcher.stats())
 
 
 # ── Health ───────────────────────────────────────────────────────────────────

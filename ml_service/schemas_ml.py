@@ -66,6 +66,17 @@ class OkResponse(BaseModel):
     ok: bool = True
 
 
+# ── /ml/bm25/* ─────────────────────────────────────────────────────────────
+
+class BM25StatsEntry(BaseModel):
+    doc_count: int
+    index_path: str
+
+
+class BM25StatsResponse(BaseModel):
+    collections: dict[str, BM25StatsEntry]
+
+
 # ── /ml/health ─────────────────────────────────────────────────────────────
 
 class HealthResponse(BaseModel):

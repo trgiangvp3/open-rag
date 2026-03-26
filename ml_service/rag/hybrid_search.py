@@ -1,71 +1,171 @@
-"""Hybrid search: BM25 + semantic via Reciprocal Rank Fusion.
+"""Hybrid search: Tantivy BM25 + semantic via Reciprocal Rank Fusion.
 
-BM25 indexes are built lazily per collection from ChromaDB and invalidated
-whenever new chunks are indexed or deleted.
+BM25 indexes are persistent on disk (one tantivy index per collection).
+Supports true incremental add and delete — no full rebuild needed.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import shutil
 import threading
+from pathlib import Path
 
-from rank_bm25 import BM25Okapi
+import tantivy
 
-from rag.store import VectorStore
+from config import BM25_INDEX_DIR, BM25_WRITER_HEAP_SIZE
 
 logger = logging.getLogger(__name__)
 
 
-class HybridSearcher:
-    """Manages per-collection BM25 indexes with lazy loading from ChromaDB."""
+class TantivyBM25Index:
+    """Manages a single tantivy index for one collection."""
 
-    def __init__(self, store: VectorStore):
-        self._store = store
-        # collection_name → (BM25Okapi, list[{text, metadata}])
-        self._indexes: dict[str, tuple[BM25Okapi, list[dict]]] = {}
+    def __init__(self, index_dir: Path, heap_size: int = BM25_WRITER_HEAP_SIZE):
+        self._index_dir = index_dir
+        self._heap_size = heap_size
         self._lock = threading.Lock()
 
-    # ── Index management ──────────────────────────────────────────────────────
+        schema_builder = tantivy.SchemaBuilder()
+        schema_builder.add_text_field("chunk_id", stored=True, tokenizer_name="raw")
+        schema_builder.add_text_field("body", stored=True)
+        schema_builder.add_text_field("metadata", stored=True, tokenizer_name="raw")
+        self._schema = schema_builder.build()
 
-    def _build_index(self, collection_name: str) -> tuple[BM25Okapi, list[dict]]:
-        """Fetch all chunks from ChromaDB and build a BM25 index."""
-        collection = self._store.get_or_create_collection(collection_name)
-        result = collection.get(include=["documents", "metadatas"])
-        texts: list[str] = result.get("documents") or []
-        metadatas: list[dict] = result.get("metadatas") or []
+        self._index = self._open_or_create()
 
-        tokenized = [text.lower().split() for text in texts]
-        bm25 = BM25Okapi(tokenized) if tokenized else BM25Okapi([[]])
-        chunks = [{"text": t, "metadata": m} for t, m in zip(texts, metadatas)]
-        logger.info("Built BM25 index for '%s': %d chunks", collection_name, len(chunks))
-        return bm25, chunks
+    def _open_or_create(self) -> tantivy.Index:
+        """Open existing index or create a new one, handling schema mismatches."""
+        self._index_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            return tantivy.Index(self._schema, path=str(self._index_dir))
+        except Exception:
+            logger.warning(
+                "Schema mismatch for '%s' — deleting and recreating index",
+                self._index_dir,
+            )
+            shutil.rmtree(self._index_dir, ignore_errors=True)
+            self._index_dir.mkdir(parents=True, exist_ok=True)
+            return tantivy.Index(self._schema, path=str(self._index_dir))
 
-    def _get_index(self, collection_name: str) -> tuple[BM25Okapi, list[dict]]:
+    # ── Write operations ──────────────────────────────────────────────────
+
+    def add(self, chunk_ids: list[str], texts: list[str], metadatas: list[dict]) -> None:
+        """Add documents to the index."""
+        with self._lock:
+            writer = self._index.writer(self._heap_size)
+            try:
+                for cid, text, meta in zip(chunk_ids, texts, metadatas):
+                    writer.add_document(tantivy.Document(
+                        chunk_id=cid,
+                        body=text,
+                        metadata=json.dumps(meta, ensure_ascii=False),
+                    ))
+                writer.commit()
+            except Exception:
+                writer.rollback()
+                raise
+            self._index.reload()
+
+    def delete(self, chunk_ids: list[str]) -> None:
+        """Delete documents by chunk_id."""
+        if not chunk_ids:
+            return
+        with self._lock:
+            writer = self._index.writer(self._heap_size)
+            try:
+                for cid in chunk_ids:
+                    writer.delete_documents("chunk_id", cid)
+                writer.commit()
+            except Exception:
+                writer.rollback()
+                raise
+            self._index.reload()
+
+    # ── Read operations ───────────────────────────────────────────────────
+
+    def search(self, query: str, top_k: int) -> list[dict]:
+        """Search the index and return top-k results."""
+        self._index.reload()
+        searcher = self._index.searcher()
+        parsed_query = self._index.parse_query(query, ["body"])
+        hits = searcher.search(parsed_query, limit=top_k).hits
+        results = []
+        for score, doc_address in hits:
+            doc = searcher.doc(doc_address)
+            results.append({
+                "text": doc["body"][0],
+                "score": round(float(score), 4),
+                "metadata": json.loads(doc["metadata"][0]),
+            })
+        return results
+
+    @property
+    def doc_count(self) -> int:
+        """Return the number of documents in the index."""
+        self._index.reload()
+        searcher = self._index.searcher()
+        return searcher.num_docs
+
+    @property
+    def index_path(self) -> str:
+        return str(self._index_dir)
+
+
+class HybridSearcher:
+    """Manages per-collection Tantivy BM25 indexes."""
+
+    def __init__(self):
+        self._indexes: dict[str, TantivyBM25Index] = {}
+        self._lock = threading.Lock()
+
+    def _get_index(self, collection_name: str) -> TantivyBM25Index:
         with self._lock:
             if collection_name not in self._indexes:
-                self._indexes[collection_name] = self._build_index(collection_name)
+                index_dir = BM25_INDEX_DIR / collection_name
+                self._indexes[collection_name] = TantivyBM25Index(index_dir)
             return self._indexes[collection_name]
 
-    def invalidate(self, collection_name: str) -> None:
-        """Drop cached index so it will be rebuilt on next query."""
-        with self._lock:
-            self._indexes.pop(collection_name, None)
+    # ── Index management ──────────────────────────────────────────────────
 
-    # ── Search ────────────────────────────────────────────────────────────────
+    def add_chunks(
+        self,
+        collection_name: str,
+        chunk_ids: list[str],
+        texts: list[str],
+        metadatas: list[dict],
+    ) -> None:
+        """Add chunks to the BM25 index for a collection."""
+        idx = self._get_index(collection_name)
+        idx.add(chunk_ids, texts, metadatas)
+        logger.info("BM25 add %d chunks to '%s'", len(chunk_ids), collection_name)
+
+    def mark_deleted(self, collection_name: str, chunk_ids: list[str]) -> None:
+        """Delete chunks from the BM25 index for a collection."""
+        idx = self._get_index(collection_name)
+        idx.delete(chunk_ids)
+        logger.info("BM25 delete %d chunks from '%s'", len(chunk_ids), collection_name)
+
+    def invalidate(self, collection_name: str) -> None:
+        """No-op — kept for backward compatibility."""
+        pass
+
+    def delete_collection(self, collection_name: str) -> None:
+        """Delete the entire BM25 index for a collection."""
+        with self._lock:
+            idx = self._indexes.pop(collection_name, None)
+        index_dir = BM25_INDEX_DIR / collection_name
+        if index_dir.exists():
+            shutil.rmtree(index_dir, ignore_errors=True)
+            logger.info("Deleted BM25 index for '%s'", collection_name)
+
+    # ── Search ────────────────────────────────────────────────────────────
 
     def bm25_search(self, collection_name: str, query: str, top_k: int) -> list[dict]:
         """Return top-k chunks ranked by BM25 score."""
-        bm25, chunks = self._get_index(collection_name)
-        if not chunks:
-            return []
-
-        tokenized_query = query.lower().split()
-        scores = bm25.get_scores(tokenized_query)
-        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
-        return [
-            {**chunks[i], "score": round(float(scores[i]), 4)}
-            for i in top_indices
-        ]
+        idx = self._get_index(collection_name)
+        return idx.search(query, top_k)
 
     def hybrid_search(
         self,
@@ -77,7 +177,7 @@ class HybridSearcher:
     ) -> list[dict]:
         """Fuse semantic and BM25 results with Reciprocal Rank Fusion.
 
-        RRF formula: score(d) = Σ 1 / (k + rank_i(d))
+        RRF formula: score(d) = sum 1 / (k + rank_i(d))
         """
         bm25_results = self.bm25_search(collection_name, query, top_k * 10)
 
@@ -100,3 +200,18 @@ class HybridSearcher:
             {**text_to_chunk[key], "score": round(rrf_scores[key], 6)}
             for key in sorted_keys[:top_k]
         ]
+
+    # ── Stats ─────────────────────────────────────────────────────────────
+
+    def stats(self) -> dict[str, dict]:
+        """Return stats for all known collections."""
+        with self._lock:
+            names = list(self._indexes.keys())
+        result = {}
+        for name in names:
+            idx = self._get_index(name)
+            result[name] = {
+                "doc_count": idx.doc_count,
+                "index_path": idx.index_path,
+            }
+        return result
