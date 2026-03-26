@@ -7,7 +7,7 @@ using OpenRAG.Api.Models.Entities;
 
 namespace OpenRAG.Api.Services;
 
-public class ChatService(AppDbContext db, MlClient ml, LlmClient llm, ILogger<ChatService> logger)
+public class ChatService(AppDbContext db, MlClient ml, LlmClient llm, CollectionService collections, ILogger<ChatService> logger)
 {
     public async Task<ChatResponse> ChatAsync(ChatRequest req, CancellationToken ct = default)
     {
@@ -97,19 +97,28 @@ public class ChatService(AppDbContext db, MlClient ml, LlmClient llm, ILogger<Ch
         string query, string collection, int topK,
         bool useReranker, string searchMode, string queryStrategy, CancellationToken ct)
     {
+        if (queryStrategy == "direct")
+            return await ml.SearchAsync(query, collection, topK, useReranker, searchMode, ct);
+
+        // Get context for LLM-based strategies
+        var collectionDesc = await collections.GetDescriptionAsync(collection, ct);
+        var prelimResults = await ml.SearchAsync(query, collection, 3, false, "semantic", ct);
+        var sampleTexts = prelimResults.Select(r => r.Text).ToList();
+
         return queryStrategy switch
         {
-            "multi-query" => await MultiQueryAsync(query, collection, topK, useReranker, searchMode, ct),
-            "hyde" => await HydeAsync(query, collection, topK, useReranker, searchMode, ct),
-            "multi-query+hyde" => await MultiQueryHydeAsync(query, collection, topK, useReranker, searchMode, ct),
+            "multi-query" => await MultiQueryAsync(query, collection, topK, useReranker, searchMode, collectionDesc, sampleTexts, ct),
+            "hyde" => await HydeAsync(query, collection, topK, useReranker, searchMode, collectionDesc, sampleTexts, ct),
+            "multi-query+hyde" => await MultiQueryHydeAsync(query, collection, topK, useReranker, searchMode, collectionDesc, sampleTexts, ct),
             _ => await ml.SearchAsync(query, collection, topK, useReranker, searchMode, ct),
         };
     }
 
     private async Task<List<ChunkResult>> MultiQueryAsync(
-        string query, string collection, int topK, bool useReranker, string searchMode, CancellationToken ct)
+        string query, string collection, int topK, bool useReranker, string searchMode,
+        string? collectionDesc, List<string> sampleTexts, CancellationToken ct)
     {
-        var altQueries = llm.IsEnabled ? await llm.GenerateQueriesAsync(query, 3, ct) : null;
+        var altQueries = await llm.GenerateQueriesAsync(query, 3, collectionDesc, sampleTexts, ct: ct);
         var allQueries = new List<string> { query };
         if (altQueries is not null) allQueries.AddRange(altQueries);
 
@@ -121,9 +130,10 @@ public class ChatService(AppDbContext db, MlClient ml, LlmClient llm, ILogger<Ch
     }
 
     private async Task<List<ChunkResult>> HydeAsync(
-        string query, string collection, int topK, bool useReranker, string searchMode, CancellationToken ct)
+        string query, string collection, int topK, bool useReranker, string searchMode,
+        string? collectionDesc, List<string> sampleTexts, CancellationToken ct)
     {
-        var hypothetical = llm.IsEnabled ? await llm.GenerateHypotheticalAsync(query, ct) : null;
+        var hypothetical = await llm.GenerateHypotheticalAsync(query, collectionDesc, sampleTexts, ct: ct);
         if (hypothetical is null)
             return await ml.SearchAsync(query, collection, topK, useReranker, searchMode, ct);
 
@@ -138,10 +148,11 @@ public class ChatService(AppDbContext db, MlClient ml, LlmClient llm, ILogger<Ch
     }
 
     private async Task<List<ChunkResult>> MultiQueryHydeAsync(
-        string query, string collection, int topK, bool useReranker, string searchMode, CancellationToken ct)
+        string query, string collection, int topK, bool useReranker, string searchMode,
+        string? collectionDesc, List<string> sampleTexts, CancellationToken ct)
     {
-        var multiTask = MultiQueryAsync(query, collection, topK, useReranker, searchMode, ct);
-        var hydeTask = HydeAsync(query, collection, topK, useReranker, searchMode, ct);
+        var multiTask = MultiQueryAsync(query, collection, topK, useReranker, searchMode, collectionDesc, sampleTexts, ct);
+        var hydeTask = HydeAsync(query, collection, topK, useReranker, searchMode, collectionDesc, sampleTexts, ct);
         await Task.WhenAll(multiTask, hydeTask);
 
         var all = new List<ChunkResult>();

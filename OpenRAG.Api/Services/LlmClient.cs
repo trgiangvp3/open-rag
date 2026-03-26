@@ -73,10 +73,17 @@ public class LlmClient(HttpClient http, AppSettingsService appSettings, ILogger<
 
     // ── Multi-Query Expansion ────────────────────────────────────────────
 
-    public async Task<List<string>?> GenerateQueriesAsync(string query, int count = 3, CancellationToken ct = default)
+    public async Task<List<string>?> GenerateQueriesAsync(
+        string query, int count = 3,
+        string? collectionDescription = null,
+        List<string>? sampleTexts = null,
+        List<ChatMessage>? history = null,
+        CancellationToken ct = default)
     {
         var settings = await GetSettingsAsync(ct);
         if (settings is null) return null;
+
+        var contextBlock = BuildContextBlock(collectionDescription, sampleTexts);
 
         var messages = new List<object>
         {
@@ -85,10 +92,18 @@ public class LlmClient(HttpClient http, AppSettingsService appSettings, ILogger<
                 that could help find relevant information. Each query should approach the topic from a different angle
                 or use different terminology.
 
+                {contextBlock}
+
+                IMPORTANT: Use the same terminology, writing style, and language as the sample documents above.
                 Return ONLY the queries, one per line, no numbering, no explanation.
-                """ },
-            new { role = "user", content = query }
+                """ }
         };
+
+        if (history is not null)
+            foreach (var msg in history)
+                messages.Add(new { role = msg.Role, content = msg.Content });
+
+        messages.Add(new { role = "user", content = query });
 
         var result = await CallLlmAsync(settings, messages, maxTokens: 300, ct);
         if (result is null) return null;
@@ -103,28 +118,66 @@ public class LlmClient(HttpClient http, AppSettingsService appSettings, ILogger<
 
     // ── HyDE (Hypothetical Document Embedding) ──────────────────────────
 
-    public async Task<string?> GenerateHypotheticalAsync(string query, CancellationToken ct = default)
+    public async Task<string?> GenerateHypotheticalAsync(
+        string query,
+        string? collectionDescription = null,
+        List<string>? sampleTexts = null,
+        List<ChatMessage>? history = null,
+        CancellationToken ct = default)
     {
         var settings = await GetSettingsAsync(ct);
         if (settings is null) return null;
 
+        var contextBlock = BuildContextBlock(collectionDescription, sampleTexts);
+
         var messages = new List<object>
         {
-            new { role = "system", content = """
+            new { role = "system", content = $"""
                 You are a document generator. Given a user question, write a short passage (150-300 words)
                 that would be a perfect answer to this question, as if it were extracted from an authoritative document.
 
+                {contextBlock}
+
+                IMPORTANT: Mimic the writing style, terminology, and structure of the sample documents above.
                 Write in the same language as the question.
                 Write in a formal, document-like style (not conversational).
                 Do not say "according to" or reference any source — write AS IF you are the source document.
-                """ },
-            new { role = "user", content = query }
+                """ }
         };
+
+        if (history is not null)
+            foreach (var msg in history)
+                messages.Add(new { role = msg.Role, content = msg.Content });
+
+        messages.Add(new { role = "user", content = query });
 
         return await CallLlmAsync(settings, messages, maxTokens: 500, ct);
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────
+
+    private static string BuildContextBlock(string? collectionDescription, List<string>? sampleTexts)
+    {
+        var sb = new StringBuilder();
+
+        if (!string.IsNullOrWhiteSpace(collectionDescription))
+            sb.AppendLine($"Collection: {collectionDescription}");
+
+        if (sampleTexts is { Count: > 0 })
+        {
+            sb.AppendLine();
+            sb.AppendLine("Sample documents from this collection:");
+            foreach (var text in sampleTexts.Take(3))
+            {
+                sb.AppendLine("---");
+                // Truncate to ~300 chars to save tokens
+                sb.AppendLine(text.Length > 300 ? text[..300] + "..." : text);
+            }
+            sb.AppendLine("---");
+        }
+
+        return sb.ToString();
+    }
 
     private record LlmSettings(string BaseUrl, string ApiKey, string Model, double Temperature, int MaxTokens, string SystemPrompt);
 

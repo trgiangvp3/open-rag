@@ -7,7 +7,7 @@ namespace OpenRAG.Api.Controllers;
 
 [ApiController]
 [Route("api/search")]
-public class SearchController(MlClient ml, LlmClient llm) : ControllerBase
+public class SearchController(MlClient ml, LlmClient llm, CollectionService collections) : ControllerBase
 {
     [HttpPost]
     public async Task<IActionResult> Search([FromBody] SearchRequest req, CancellationToken ct = default)
@@ -32,19 +32,28 @@ public class SearchController(MlClient ml, LlmClient llm) : ControllerBase
         bool useReranker, string searchMode, string queryStrategy,
         CancellationToken ct)
     {
+        if (queryStrategy == "direct")
+            return await ml.SearchAsync(query, collection, topK, useReranker, searchMode, ct);
+
+        // For LLM-based strategies: get context first
+        var collectionDesc = await collections.GetDescriptionAsync(collection, ct);
+        var prelimResults = await ml.SearchAsync(query, collection, 3, false, "semantic", ct);
+        var sampleTexts = prelimResults.Select(r => r.Text).ToList();
+
         return queryStrategy switch
         {
-            "multi-query" => await MultiQueryAsync(query, collection, topK, useReranker, searchMode, ct),
-            "hyde" => await HydeAsync(query, collection, topK, useReranker, searchMode, ct),
-            "multi-query+hyde" => await MultiQueryHydeAsync(query, collection, topK, useReranker, searchMode, ct),
+            "multi-query" => await MultiQueryAsync(query, collection, topK, useReranker, searchMode, collectionDesc, sampleTexts, ct),
+            "hyde" => await HydeAsync(query, collection, topK, useReranker, searchMode, collectionDesc, sampleTexts, ct),
+            "multi-query+hyde" => await MultiQueryHydeAsync(query, collection, topK, useReranker, searchMode, collectionDesc, sampleTexts, ct),
             _ => await ml.SearchAsync(query, collection, topK, useReranker, searchMode, ct),
         };
     }
 
     private async Task<List<ChunkResult>> MultiQueryAsync(
-        string query, string collection, int topK, bool useReranker, string searchMode, CancellationToken ct)
+        string query, string collection, int topK, bool useReranker, string searchMode,
+        string? collectionDesc, List<string> sampleTexts, CancellationToken ct)
     {
-        var altQueries = llm.IsEnabled ? await llm.GenerateQueriesAsync(query, 3, ct) : null;
+        var altQueries = await llm.GenerateQueriesAsync(query, 3, collectionDesc, sampleTexts, ct: ct);
         var allQueries = new List<string> { query };
         if (altQueries is not null) allQueries.AddRange(altQueries);
 
@@ -56,39 +65,34 @@ public class SearchController(MlClient ml, LlmClient llm) : ControllerBase
     }
 
     private async Task<List<ChunkResult>> HydeAsync(
-        string query, string collection, int topK, bool useReranker, string searchMode, CancellationToken ct)
+        string query, string collection, int topK, bool useReranker, string searchMode,
+        string? collectionDesc, List<string> sampleTexts, CancellationToken ct)
     {
-        var hypothetical = llm.IsEnabled ? await llm.GenerateHypotheticalAsync(query, ct) : null;
+        var hypothetical = await llm.GenerateHypotheticalAsync(query, collectionDesc, sampleTexts, ct: ct);
         if (hypothetical is null)
             return await ml.SearchAsync(query, collection, topK, useReranker, searchMode, ct);
 
-        // HyDE: embed hypothetical doc for semantic, but use original query for BM25 in hybrid
         var hydeResults = await ml.SearchWithTextAsync(hypothetical, collection, topK, useReranker, "semantic", ct);
-
         if (searchMode == "hybrid")
         {
-            // Also run BM25 with original query and merge
             var bm25Results = await ml.SearchAsync(query, collection, topK, useReranker, "hybrid", ct);
             hydeResults.AddRange(bm25Results);
             return Deduplicate(hydeResults, topK);
         }
-
         return hydeResults;
     }
 
     private async Task<List<ChunkResult>> MultiQueryHydeAsync(
-        string query, string collection, int topK, bool useReranker, string searchMode, CancellationToken ct)
+        string query, string collection, int topK, bool useReranker, string searchMode,
+        string? collectionDesc, List<string> sampleTexts, CancellationToken ct)
     {
-        // Run both strategies in parallel
-        var multiTask = MultiQueryAsync(query, collection, topK, useReranker, searchMode, ct);
-        var hydeTask = HydeAsync(query, collection, topK, useReranker, searchMode, ct);
-
+        var multiTask = MultiQueryAsync(query, collection, topK, useReranker, searchMode, collectionDesc, sampleTexts, ct);
+        var hydeTask = HydeAsync(query, collection, topK, useReranker, searchMode, collectionDesc, sampleTexts, ct);
         await Task.WhenAll(multiTask, hydeTask);
 
         var all = new List<ChunkResult>();
         all.AddRange(multiTask.Result);
         all.AddRange(hydeTask.Result);
-
         return Deduplicate(all, topK);
     }
 

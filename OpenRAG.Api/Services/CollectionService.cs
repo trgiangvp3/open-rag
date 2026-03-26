@@ -87,4 +87,12 @@ public class CollectionService(AppDbContext db, MlClient ml, ILogger<CollectionS
     {
         return await db.Collections.FirstOrDefaultAsync(c => c.Name == name, ct);
     }
+
+    public async Task<string?> GetDescriptionAsync(string name, CancellationToken ct = default)
+    {
+        return await db.Collections
+            .Where(c => c.Name == name)
+            .Select(c => c.Description)
+            .FirstOrDefaultAsync(ct);
+    }
 }
