@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, nextTick, onMounted, onUnmounted } from 'vue'
+import * as signalR from '@microsoft/signalr'
 import { marked } from 'marked'
-import { chat, getChatHistory, deleteChatSession, getDocumentMarkdown, getDocumentChunks, type ChunkResult, type DocumentChunk } from '../api'
+import { chat, getChatHistory, deleteChatSession, getDocumentChunks, type ChunkResult, type DocumentChunk } from '../api'
 import { useCollectionsStore } from '../stores/collections'
 
 marked.setOptions({ breaks: true, gfm: true })
@@ -22,7 +23,7 @@ function renderMdPlain(text: string): string {
 const store = useCollectionsStore()
 const collection = ref('documents')
 const useReranker = ref(true)
-const queryStrategy = ref<'direct' | 'multi-query' | 'hyde' | 'multi-query+hyde'>('multi-query+hyde')
+const queryStrategy = ref<'direct' | 'multi-query' | 'hyde' | 'multi-query+hyde'>('direct')
 const retrievalMode = ref('hybrid')
 
 const SESSION_KEY = 'openrag_chat_session_id'
@@ -38,18 +39,18 @@ const sessionId = ref<string | null>(localStorage.getItem(SESSION_KEY))
 const messages = ref<Message[]>([])
 const query = ref('')
 const loading = ref(false)
+const statusText = ref('')
 const error = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
 
 // Viewer
 const viewerOpen = ref(false)
 const viewerTitle = ref('')
-const viewerMarkdown = ref('')
 const viewerChunks = ref<DocumentChunk[]>([])
-const viewerMode = ref<'markdown' | 'chunks'>('markdown')
 const viewerLoading = ref(false)
 const viewerDocId = ref<string | null>(null)
 const activeSourceIdx = ref<number | null>(null)
+const highlightChunkId = ref<string | null>(null)
 
 const sourceColors = ['border-violet-500/60 bg-violet-500/10', 'border-blue-500/60 bg-blue-500/10', 'border-emerald-500/60 bg-emerald-500/10', 'border-amber-500/60 bg-amber-500/10', 'border-rose-500/60 bg-rose-500/10', 'border-cyan-500/60 bg-cyan-500/10', 'border-pink-500/60 bg-pink-500/10', 'border-teal-500/60 bg-teal-500/10']
 const sourceBadgeColors = ['bg-violet-600', 'bg-blue-600', 'bg-emerald-600', 'bg-amber-600', 'bg-rose-600', 'bg-cyan-600', 'bg-pink-600', 'bg-teal-600']
@@ -57,17 +58,44 @@ const sourceBadgeColors = ['bg-violet-600', 'bg-blue-600', 'bg-emerald-600', 'bg
 function sourceColor(idx: number) { return sourceColors[idx % sourceColors.length] }
 function badgeColor(idx: number) { return sourceBadgeColors[idx % sourceBadgeColors.length] }
 
-onMounted(async () => {
+// ── SignalR for chat status ──────────────────────────────────────────────────
+let hubConnection: signalR.HubConnection | null = null
+
+async function ensureHub() {
+  if (hubConnection) return
+  hubConnection = new signalR.HubConnectionBuilder()
+    .withUrl('/ws/progress')
+    .withAutomaticReconnect([0, 2000, 5000, 10000])
+    .build()
+
+  hubConnection.on('chat-status', (event: { sessionId: string; status: string }) => {
+    if (event.sessionId === sessionId.value && loading.value) {
+      statusText.value = event.status
+    }
+  })
+
+  hubConnection.onclose(() => { hubConnection = null })
+
+  try { await hubConnection.start() } catch { hubConnection = null }
+}
+
+onMounted(() => {
+  ensureHub()
   if (sessionId.value) {
-    try {
-      const { data } = await getChatHistory(sessionId.value)
+    getChatHistory(sessionId.value).then(({ data }) => {
       messages.value = data.messages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
-    } catch {
+    }).catch(() => {
       sessionId.value = null
       localStorage.removeItem(SESSION_KEY)
-    }
+    })
   }
 })
+
+onUnmounted(async () => {
+  if (hubConnection) { try { await hubConnection.stop() } catch {} hubConnection = null }
+})
+
+// ── Chat logic ───────────────────────────────────────────────────────────────
 
 async function sendMessage() {
   if (!query.value.trim() || loading.value) return
@@ -75,7 +103,9 @@ async function sendMessage() {
   query.value = ''
   messages.value.push({ role: 'user', content: userQuery })
   loading.value = true
+  statusText.value = 'Đang xử lý...'
   error.value = ''
+  await ensureHub()
   await scrollToBottom()
 
   try {
@@ -101,6 +131,7 @@ async function sendMessage() {
     messages.value.push({ role: 'assistant', content: `Lỗi: ${error.value}` })
   } finally {
     loading.value = false
+    statusText.value = ''
     await scrollToBottom()
   }
 }
@@ -123,34 +154,52 @@ function isCited(msg: Message, idx: number) {
   return msg.citations?.includes(idx) ?? false
 }
 
+// ── Source viewer ────────────────────────────────────────────────────────────
+
 async function openSource(chunk: ChunkResult, idx: number) {
   const docId = chunk.metadata.document_id
   if (!docId) return
+
   viewerDocId.value = docId
   viewerOpen.value = true
   viewerTitle.value = chunk.metadata.filename ?? docId
   activeSourceIdx.value = idx
-  await loadViewer()
+  // Find the chunk ID from metadata to highlight
+  highlightChunkId.value = null
+  await loadViewerChunks(docId, chunk.text)
 }
 
-async function loadViewer() {
-  if (!viewerDocId.value) return
+async function loadViewerChunks(docId: string, targetText?: string) {
   viewerLoading.value = true
-  viewerMarkdown.value = ''
   viewerChunks.value = []
   try {
-    if (viewerMode.value === 'markdown') {
-      const { data } = await getDocumentMarkdown(viewerDocId.value)
-      viewerMarkdown.value = data.markdown
-    } else {
-      const { data } = await getDocumentChunks(viewerDocId.value, collection.value)
-      viewerChunks.value = data.chunks
+    const { data } = await getDocumentChunks(docId, collection.value)
+    viewerChunks.value = data.chunks
+    // Scroll to matching chunk
+    if (targetText) {
+      await nextTick()
+      const match = viewerChunks.value.find(c => c.text === targetText)
+      if (match) {
+        highlightChunkId.value = match.id
+        await nextTick()
+        const el = document.getElementById(`viewer-chunk-${match.id}`)
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
     }
   } catch {
-    viewerMarkdown.value = '*Không thể tải nội dung*'
+    viewerChunks.value = []
   } finally {
     viewerLoading.value = false
   }
+}
+
+// ── Reference table helper ───────────────────────────────────────────────────
+
+function getRefSummary(chunk: ChunkResult): string {
+  const section = chunk.metadata?.section ?? ''
+  const filename = chunk.metadata?.filename ?? ''
+  if (section && filename) return `${section} — ${filename}`
+  return section || filename || 'Không rõ nguồn'
 }
 </script>
 
@@ -167,7 +216,7 @@ async function loadViewer() {
       <div class="space-y-1">
         <label class="text-slate-500 text-[10px] uppercase tracking-wider">Collection</label>
         <select v-model="collection"
-          class="w-full bg-slate-800/80 border border-slate-600/50 rounded-lg px-2 py-1.5 text-slate-300 text-xs focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/20">
+          class="w-full bg-slate-800/80 border border-slate-600/50 rounded-lg px-2 py-1.5 text-slate-300 text-xs focus:outline-none focus:border-violet-500">
           <option v-for="c in store.collections" :key="c.name" :value="c.name">{{ c.name }}</option>
         </select>
       </div>
@@ -175,7 +224,7 @@ async function loadViewer() {
       <div class="space-y-1">
         <label class="text-slate-500 text-[10px] uppercase tracking-wider">Query</label>
         <select v-model="queryStrategy"
-          class="w-full bg-slate-800/80 border border-slate-600/50 rounded-lg px-2 py-1.5 text-slate-300 text-xs focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/20">
+          class="w-full bg-slate-800/80 border border-slate-600/50 rounded-lg px-2 py-1.5 text-slate-300 text-xs focus:outline-none focus:border-violet-500">
           <option value="direct">Trực tiếp</option>
           <option value="multi-query">Multi-query</option>
           <option value="hyde">HyDE</option>
@@ -186,13 +235,13 @@ async function loadViewer() {
       <div class="space-y-1">
         <label class="text-slate-500 text-[10px] uppercase tracking-wider">Phương pháp</label>
         <select v-model="retrievalMode"
-          class="w-full bg-slate-800/80 border border-slate-600/50 rounded-lg px-2 py-1.5 text-slate-300 text-xs focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/20">
+          class="w-full bg-slate-800/80 border border-slate-600/50 rounded-lg px-2 py-1.5 text-slate-300 text-xs focus:outline-none focus:border-violet-500">
           <option value="semantic">Semantic</option>
           <option value="hybrid">Hybrid</option>
         </select>
       </div>
 
-      <label class="flex items-center gap-2 cursor-pointer select-none text-xs text-slate-400 hover:text-slate-300 transition-colors">
+      <label class="flex items-center gap-2 cursor-pointer select-none text-xs text-slate-400">
         <input type="checkbox" v-model="useReranker" class="accent-violet-500 rounded" />
         Reranker
       </label>
@@ -218,7 +267,6 @@ async function loadViewer() {
             </svg>
           </div>
           <p class="text-sm">Bắt đầu hội thoại với tài liệu của bạn</p>
-          <p class="text-xs text-slate-700">Đặt câu hỏi, hệ thống sẽ tìm kiếm và trả lời dựa trên dữ liệu đã index</p>
         </div>
 
         <template v-for="(msg, i) in messages" :key="i">
@@ -231,23 +279,38 @@ async function loadViewer() {
 
           <!-- Assistant -->
           <div v-else class="space-y-3">
-            <!-- Answer card -->
+            <!-- Answer -->
             <div class="bg-gradient-to-br from-slate-800/80 to-slate-800/40 border border-slate-700/50 rounded-2xl rounded-tl-md px-6 py-4 shadow-lg shadow-slate-900/20">
               <div class="prose prose-invert prose-sm max-w-none
                 prose-p:my-2 prose-p:leading-relaxed prose-p:text-slate-300
                 prose-li:my-0.5 prose-li:text-slate-300 prose-ul:my-2 prose-ol:my-2
-                prose-headings:mt-4 prose-headings:mb-2 prose-headings:text-slate-100 prose-headings:font-semibold
-                prose-strong:text-white prose-strong:font-semibold
-                prose-em:text-violet-300
+                prose-headings:mt-4 prose-headings:mb-2 prose-headings:text-slate-100
+                prose-strong:text-white prose-em:text-violet-300
                 prose-code:text-violet-300 prose-code:bg-slate-700/50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs
-                prose-blockquote:border-violet-500/50 prose-blockquote:bg-slate-800/30 prose-blockquote:rounded-r-lg prose-blockquote:py-1
-                prose-hr:border-slate-700/50
-                prose-a:text-violet-400 prose-a:no-underline hover:prose-a:underline
-                prose-table:text-xs prose-th:text-slate-300 prose-td:text-slate-400"
+                prose-blockquote:border-violet-500/50 prose-blockquote:bg-slate-800/30 prose-blockquote:rounded-r-lg
+                prose-a:text-violet-400"
                 v-html="renderMd(msg.content)" />
             </div>
 
-            <!-- Sources row -->
+            <!-- Reference table -->
+            <div v-if="msg.chunks?.length && msg.citations?.length" class="bg-slate-800/30 border border-slate-700/30 rounded-xl px-4 py-3">
+              <p class="text-slate-500 text-[10px] uppercase tracking-wider mb-2">Bảng tham chiếu</p>
+              <table class="w-full text-xs">
+                <tbody>
+                  <tr v-for="ci in msg.citations" :key="ci"
+                    class="border-b border-slate-700/20 last:border-0 hover:bg-slate-700/20 cursor-pointer transition-colors"
+                    @click="openSource(msg.chunks![ci], ci)">
+                    <td class="py-1.5 pr-2 w-8">
+                      <span :class="['inline-flex items-center justify-center w-5 h-5 text-[10px] text-white rounded-full font-bold', badgeColor(ci)]">{{ ci + 1 }}</span>
+                    </td>
+                    <td class="py-1.5 pr-3 text-slate-300 font-medium">{{ msg.chunks![ci].metadata?.section || '—' }}</td>
+                    <td class="py-1.5 text-slate-500">{{ msg.chunks![ci].metadata?.filename || '' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- Source pills -->
             <div v-if="msg.chunks?.length" class="flex items-start gap-2 pl-1">
               <span class="text-slate-600 text-[10px] uppercase tracking-wider mt-1.5 flex-shrink-0">Nguồn</span>
               <div class="flex flex-wrap gap-1.5">
@@ -266,7 +329,7 @@ async function loadViewer() {
           </div>
         </template>
 
-        <!-- Typing indicator -->
+        <!-- Loading with real-time status -->
         <div v-if="loading" class="flex justify-start">
           <div class="bg-slate-800/60 border border-slate-700/50 rounded-2xl rounded-tl-md px-5 py-3 shadow-lg">
             <div class="flex items-center gap-2">
@@ -275,7 +338,7 @@ async function loadViewer() {
                 <span class="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce" style="animation-delay: 150ms" />
                 <span class="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce" style="animation-delay: 300ms" />
               </div>
-              <span class="text-slate-500 text-xs">Đang tìm kiếm và phân tích...</span>
+              <span class="text-slate-400 text-xs">{{ statusText || 'Đang xử lý...' }}</span>
             </div>
           </div>
         </div>
@@ -283,19 +346,12 @@ async function loadViewer() {
 
       <!-- Input bar -->
       <div class="flex-shrink-0 px-6 pb-4">
-        <div class="flex gap-2 bg-slate-800/50 border border-slate-700/50 rounded-2xl p-1.5 shadow-lg focus-within:border-violet-500/50 focus-within:ring-1 focus-within:ring-violet-500/10 transition-all">
-          <input
-            v-model="query"
-            @keyup.enter="sendMessage"
-            :disabled="loading"
+        <div class="flex gap-2 bg-slate-800/50 border border-slate-700/50 rounded-2xl p-1.5 shadow-lg focus-within:border-violet-500/50 transition-all">
+          <input v-model="query" @keyup.enter="sendMessage" :disabled="loading"
             placeholder="Nhập câu hỏi về tài liệu..."
-            class="flex-1 bg-transparent px-4 py-2 text-slate-100 placeholder-slate-500 focus:outline-none disabled:opacity-50 text-sm"
-          />
-          <button
-            @click="sendMessage"
-            :disabled="loading || !query.trim()"
-            class="px-4 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-30 rounded-xl text-white transition-all shadow-md shadow-violet-900/30 hover:shadow-violet-800/40"
-          >
+            class="flex-1 bg-transparent px-4 py-2 text-slate-100 placeholder-slate-500 focus:outline-none disabled:opacity-50 text-sm" />
+          <button @click="sendMessage" :disabled="loading || !query.trim()"
+            class="px-4 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-30 rounded-xl text-white transition-all shadow-md shadow-violet-900/30">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
             </svg>
@@ -304,29 +360,17 @@ async function loadViewer() {
       </div>
     </div>
 
-    <!-- Col 3: Document viewer -->
+    <!-- Col 3: Document viewer — chunks mode, scroll to specific chunk -->
     <div v-if="viewerOpen" class="w-[38%] flex-shrink-0 flex flex-col min-w-0 bg-slate-900/30">
-      <!-- Header -->
       <div class="p-3 border-b border-slate-700/50 flex items-center justify-between bg-slate-800/30">
         <div class="flex items-center gap-2 min-w-0">
           <span v-if="activeSourceIdx !== null" :class="['inline-flex items-center justify-center w-5 h-5 text-[10px] text-white rounded-full font-bold shadow-sm', badgeColor(activeSourceIdx)]">{{ activeSourceIdx + 1 }}</span>
           <p class="text-slate-200 text-sm font-medium truncate">{{ viewerTitle }}</p>
         </div>
-        <div class="flex items-center gap-2 flex-shrink-0">
-          <div class="flex bg-slate-800 rounded-lg p-0.5 border border-slate-700/50">
-            <button @click="viewerMode = 'markdown'; loadViewer()"
-              :class="['px-2.5 py-1 rounded-md text-xs transition-all', viewerMode === 'markdown' ? 'bg-violet-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200']"
-            >Văn bản</button>
-            <button @click="viewerMode = 'chunks'; loadViewer()"
-              :class="['px-2.5 py-1 rounded-md text-xs transition-all', viewerMode === 'chunks' ? 'bg-violet-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200']"
-            >Chunks</button>
-          </div>
-          <button @click="viewerOpen = false; activeSourceIdx = null"
-            class="w-7 h-7 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-700/50 transition-all">&times;</button>
-        </div>
+        <button @click="viewerOpen = false; activeSourceIdx = null; highlightChunkId = null"
+          class="w-7 h-7 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-700/50 transition-all">&times;</button>
       </div>
 
-      <!-- Content -->
       <div v-if="viewerLoading" class="flex-1 flex items-center justify-center">
         <div class="flex items-center gap-2 text-slate-500 text-sm">
           <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -336,15 +380,10 @@ async function loadViewer() {
           Đang tải...
         </div>
       </div>
-      <div v-else-if="viewerMode === 'markdown'" class="flex-1 overflow-y-auto p-5">
-        <div v-if="viewerMarkdown" class="prose prose-invert prose-sm max-w-none
-          prose-p:text-slate-300 prose-headings:text-slate-100 prose-strong:text-white
-          prose-code:text-violet-300 prose-code:bg-slate-700/50 prose-code:px-1 prose-code:rounded"
-          v-html="renderMdPlain(viewerMarkdown)" />
-        <div v-else class="text-slate-600 text-sm italic">Không có nội dung markdown (tài liệu cũ)</div>
-      </div>
       <div v-else class="flex-1 overflow-y-auto">
-        <div v-for="(chunk, i) in viewerChunks" :key="chunk.id" class="border-b border-slate-800/50">
+        <div v-for="(chunk, i) in viewerChunks" :key="chunk.id"
+          :id="`viewer-chunk-${chunk.id}`"
+          :class="['border-b border-slate-800/50 transition-all', highlightChunkId === chunk.id ? 'bg-violet-900/20 border-l-2 border-l-violet-500' : '']">
           <div class="px-4 py-1.5 bg-slate-800/30 flex items-center gap-2">
             <span class="text-violet-400/70 text-[10px] font-mono">#{{ i }}</span>
             <span v-if="chunk.metadata?.section" class="text-slate-500 text-xs truncate">{{ chunk.metadata.section }}</span>
