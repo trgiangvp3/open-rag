@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using OpenRAG.Api.Data;
 using OpenRAG.Api.Models.Dto.Responses;
@@ -7,6 +8,8 @@ namespace OpenRAG.Api.Services;
 
 public class CollectionService(AppDbContext db, MlClient ml, ILogger<CollectionService> logger)
 {
+    private static readonly Regex ValidCollectionName = new(@"^[a-zA-Z0-9_-]{1,64}$", RegexOptions.Compiled);
+
     public async Task<List<CollectionInfo>> ListCollectionsAsync(CancellationToken ct = default)
     {
         return await db.Collections
@@ -20,6 +23,9 @@ public class CollectionService(AppDbContext db, MlClient ml, ILogger<CollectionS
 
     public async Task<StatusResponse> CreateCollectionAsync(string name, string description, CancellationToken ct = default)
     {
+        if (!ValidCollectionName.IsMatch(name))
+            return new StatusResponse("error", "Collection name must be 1–64 characters: letters, digits, _ or -");
+
         if (await db.Collections.AnyAsync(c => c.Name == name, ct))
             return new StatusResponse("error", $"Collection '{name}' already exists");
 

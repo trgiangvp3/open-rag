@@ -23,6 +23,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
              .WithMany(c => c.Documents)
              .HasForeignKey(d => d.CollectionId)
              .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasIndex(d => d.Status);
+            e.HasIndex(d => d.CollectionId);
         });
 
         modelBuilder.Entity<ChatMessageEntity>(e =>
@@ -31,6 +34,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
              .WithMany(s => s.Messages)
              .HasForeignKey(m => m.SessionId)
              .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasIndex(m => m.SessionId);
         });
 
         // Seed default collection

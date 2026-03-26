@@ -74,10 +74,14 @@ async def convert_file(
 
     try:
         loop = asyncio.get_event_loop()
-        markdown = await loop.run_in_executor(
-            None, lambda: convert_to_markdown(tmp_path, filename)
+        markdown = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: convert_to_markdown(tmp_path, filename)),
+            timeout=120,
         )
         return {"markdown": markdown, "ok": True}
+    except asyncio.TimeoutError:
+        logger.error(f"Conversion timed out for '{filename}'")
+        raise HTTPException(status_code=408, detail="File conversion timed out")
     except Exception as e:
         logger.error(f"Conversion failed for '{filename}': {e}")
         raise HTTPException(status_code=422, detail=str(e))

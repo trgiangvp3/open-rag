@@ -7,6 +7,11 @@ namespace OpenRAG.Api.Controllers;
 [Route("api/documents")]
 public class DocumentsController(DocumentService docs) : ControllerBase
 {
+    private const long MaxFileSizeBytes = 100 * 1024 * 1024; // 100 MB
+    private const int MaxTextLength = 10 * 1024 * 1024;      // 10 MB
+    private static readonly HashSet<string> AllowedExtensions =
+        [".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".txt", ".md", ".html", ".htm", ".csv"];
+
     [HttpPost("upload")]
     public async Task<IActionResult> Upload(
         IFormFile file,
@@ -16,8 +21,16 @@ public class DocumentsController(DocumentService docs) : ControllerBase
         if (file is null || file.Length == 0)
             return BadRequest(new { detail = "No file provided" });
 
+        if (file.Length > MaxFileSizeBytes)
+            return BadRequest(new { detail = $"File exceeds {MaxFileSizeBytes / 1024 / 1024} MB limit" });
+
+        var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+        if (!AllowedExtensions.Contains(ext))
+            return BadRequest(new { detail = $"File type '{ext}' not allowed" });
+
+        var safeFilename = Path.GetFileName(file.FileName);
         await using var stream = file.OpenReadStream();
-        var result = await docs.IngestFileAsync(stream, file.FileName, collection, file.Length, ct);
+        var result = await docs.IngestFileAsync(stream, safeFilename, collection, file.Length, ct);
         return Ok(result);
     }
 
@@ -30,6 +43,9 @@ public class DocumentsController(DocumentService docs) : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(text))
             return BadRequest(new { detail = "No text provided" });
+
+        if (text.Length > MaxTextLength)
+            return BadRequest(new { detail = $"Text exceeds {MaxTextLength / 1024 / 1024} MB limit" });
 
         var result = await docs.IngestTextAsync(text, title, collection, ct);
         return Ok(result);
