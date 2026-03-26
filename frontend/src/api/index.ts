@@ -37,6 +37,25 @@ export interface CollectionInfo {
   description: string
   documentCount: number
   chunkCount: number
+  chunkSize: number
+  chunkOverlap: number
+  sectionTokenThreshold: number
+  autoDetectHeadings: boolean
+  headingScript: string | null
+}
+
+export interface CollectionSettings {
+  chunkSize: number
+  chunkOverlap: number
+  sectionTokenThreshold: number
+  autoDetectHeadings: boolean
+  headingScript: string | null
+}
+
+export interface TestScriptResponse {
+  status: string
+  chunkCount: number
+  chunks: { index: number; text: string; metadata: Record<string, string>; length: number }[]
 }
 
 export interface IngestResponse {
@@ -111,6 +130,12 @@ export const createCollection = (name: string, description: string) =>
 
 export const deleteCollection = (name: string) =>
   api.delete<StatusResponse>(`/collections/${name}`)
+
+export const updateCollectionSettings = (name: string, settings: Partial<CollectionSettings>) =>
+  api.put<StatusResponse>(`/collections/${name}/settings`, settings)
+
+export const testHeadingScript = (name: string, script: string, sampleText: string, settings?: Partial<CollectionSettings>) =>
+  api.post<TestScriptResponse>(`/collections/${name}/test-heading-script`, { script, sampleText, ...settings })
 
 // ── Health ─────────────────────────────────────────────────────────────────
 

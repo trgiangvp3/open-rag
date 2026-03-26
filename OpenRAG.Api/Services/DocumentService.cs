@@ -12,7 +12,6 @@ namespace OpenRAG.Api.Services;
 public class DocumentService(
     AppDbContext db,
     MlClient ml,
-    MarkdownChunker chunker,
     IHubContext<ProgressHub> hub,
     ILogger<DocumentService> logger)
 {
@@ -23,10 +22,21 @@ public class DocumentService(
                 t => logger.LogWarning(t.Exception, "Failed to send progress event for {DocumentId}", documentId),
                 TaskContinuationOptions.OnlyOnFaulted);
 
+    private static MarkdownChunker CreateChunker(Collection col)
+    {
+        return new MarkdownChunker(
+            chunkSize: col.ChunkSize,
+            chunkOverlap: col.ChunkOverlap,
+            sectionTokenThreshold: col.SectionTokenThreshold,
+            autoDetectHeadings: col.AutoDetectHeadings,
+            headingScript: col.HeadingScript);
+    }
+
     public async Task<IngestResponse> IngestFileAsync(
         Stream fileStream, string filename, string collection, long sizeBytes, CancellationToken ct = default)
     {
         var col = await GetOrCreateCollectionAsync(collection, ct);
+        var chunker = CreateChunker(col);
         var documentId = Guid.NewGuid();
         var docIdStr = documentId.ToString();
 
@@ -43,7 +53,7 @@ public class DocumentService(
 
         try
         {
-            // Convert file → markdown
+            // Convert file -> markdown
             ReportProgress(docIdStr, "converting", 10);
             var markdown = await ml.ConvertFileAsync(fileStream, filename, ct);
 
@@ -91,6 +101,7 @@ public class DocumentService(
         string text, string title, string collection, CancellationToken ct = default)
     {
         var col = await GetOrCreateCollectionAsync(collection, ct);
+        var chunker = CreateChunker(col);
         var documentId = Guid.NewGuid();
         var docIdStr = documentId.ToString();
 

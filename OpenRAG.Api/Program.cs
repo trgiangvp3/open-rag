@@ -2,7 +2,6 @@ using Microsoft.EntityFrameworkCore;
 using OpenRAG.Api.Data;
 using OpenRAG.Api.Hubs;
 using OpenRAG.Api.Services;
-using OpenRAG.Api.Services.Chunking;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -31,7 +30,6 @@ builder.Services.AddHttpClient<LlmClient>(client =>
 });
 
 // ── Application services ──────────────────────────────────────────────────
-builder.Services.AddSingleton<MarkdownChunker>();
 builder.Services.AddScoped<DocumentService>();
 builder.Services.AddScoped<CollectionService>();
 builder.Services.AddScoped<ChatService>();

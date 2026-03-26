@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Jint;
 using SharpToken;
 
 namespace OpenRAG.Api.Services.Chunking;
@@ -9,6 +10,9 @@ public class MarkdownChunker
 {
     private readonly int _chunkSize;
     private readonly int _chunkOverlap;
+    private readonly int _sectionTokenThreshold;
+    private readonly bool _autoDetectHeadings;
+    private readonly string? _headingScript;
     private readonly GptEncoding _encoding;
 
     // Vietnamese metadata sections to exclude (revision history, approval tables)
@@ -23,14 +27,24 @@ public class MarkdownChunker
 
     private static readonly Regex HeaderPattern = new(@"^(#{1,6})\s+(.+)$", RegexOptions.Multiline);
     private static readonly Regex BoldHeaderPattern = new(@"^\*\*(\d+[\.\)]\s*.+?)\*\*\s*$", RegexOptions.Multiline);
+    private static readonly Regex StandaloneBoldLinePattern = new(
+        @"^\*\*(?<text>[^\*\n]{3,200})\*\*\s*$", RegexOptions.Multiline);
     private static readonly Regex TableRowPattern = new(@"^\|.+\|$", RegexOptions.Multiline);
     private static readonly Regex TableSepPattern = new(@"^\|[\s\-:]+\|$");
-    private static readonly Regex SentenceSplitPattern = new(@"(?<=[.!?])\s+|\n+");
+    private static readonly Regex SentenceSplitPattern = new(@"(?<=[.!?;])\s+|\n+");
 
-    public MarkdownChunker(int chunkSize = 150, int chunkOverlap = 20)
+    public MarkdownChunker(
+        int chunkSize = 400,
+        int chunkOverlap = 50,
+        int sectionTokenThreshold = 800,
+        bool autoDetectHeadings = true,
+        string? headingScript = null)
     {
         _chunkSize = chunkSize;
         _chunkOverlap = chunkOverlap;
+        _sectionTokenThreshold = sectionTokenThreshold;
+        _autoDetectHeadings = autoDetectHeadings;
+        _headingScript = headingScript;
         // Use cl100k_base encoding (same token space as tiktoken cl100k)
         _encoding = GptEncoding.GetEncoding("cl100k_base");
     }
@@ -41,6 +55,7 @@ public class MarkdownChunker
 
         text = StripMetadataSections(text);
         var sections = SplitBySections(text);
+        sections = EnrichOversizedSections(sections);
         var chunks = new List<Chunk>();
 
         foreach (var section in sections)
@@ -150,6 +165,162 @@ public class MarkdownChunker
             sections.Insert(0, new SectionInfo("", preContent));
 
         return sections;
+    }
+
+    // ── Enrich oversized sections with heading detection ──────────────────
+
+    private List<SectionInfo> EnrichOversizedSections(List<SectionInfo> sections)
+    {
+        if (_sectionTokenThreshold <= 0) return sections;
+
+        var enriched = new List<SectionInfo>();
+
+        foreach (var section in sections)
+        {
+            if (CountTokens(section.Text) > _sectionTokenThreshold)
+            {
+                var subSections = DetectAndSplitHeadings(section);
+                enriched.AddRange(subSections);
+            }
+            else
+            {
+                enriched.Add(section);
+            }
+        }
+
+        return enriched;
+    }
+
+    private List<SectionInfo> DetectAndSplitHeadings(SectionInfo section)
+    {
+        var lines = section.Text.Split('\n');
+        var detectedHeadings = new List<(int LineIndex, int Level, string Text)>();
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            var heading = DetectHeadingInLine(line, i, lines);
+            if (heading is not null)
+                detectedHeadings.Add((i, heading.Value.Level, heading.Value.Text));
+        }
+
+        if (detectedHeadings.Count == 0)
+            return [section];
+
+        var subSections = new List<SectionInfo>();
+
+        // Content before first detected heading
+        if (detectedHeadings[0].LineIndex > 0)
+        {
+            var preLines = lines[..detectedHeadings[0].LineIndex];
+            var preText = string.Join('\n', preLines).Trim();
+            if (!string.IsNullOrEmpty(preText))
+                subSections.Add(new SectionInfo(section.Header, preText));
+        }
+
+        for (int i = 0; i < detectedHeadings.Count; i++)
+        {
+            var (lineIdx, level, headingText) = detectedHeadings[i];
+            int startLine = lineIdx + 1;
+            int endLine = i + 1 < detectedHeadings.Count
+                ? detectedHeadings[i + 1].LineIndex
+                : lines.Length;
+
+            if (startLine >= endLine) continue;
+
+            var contentLines = lines[startLine..endLine];
+            var content = string.Join('\n', contentLines).Trim();
+            if (string.IsNullOrEmpty(content)) continue;
+
+            var headerPath = string.IsNullOrEmpty(section.Header)
+                ? headingText
+                : $"{section.Header} > {headingText}";
+
+            subSections.Add(new SectionInfo(headerPath, content));
+        }
+
+        return subSections.Count > 0 ? subSections : [section];
+    }
+
+    private (int Level, string Text)? DetectHeadingInLine(string line, int index, string[] allLines)
+    {
+        // 1. Custom JS heading script (Jint)
+        if (!string.IsNullOrWhiteSpace(_headingScript))
+        {
+            var result = RunHeadingScript(line, index, allLines);
+            if (result is not null)
+                return result;
+        }
+
+        // 2. Auto-detect patterns
+        if (_autoDetectHeadings)
+        {
+            var trimmed = line.Trim();
+
+            // Standalone bold line: **Some Heading Text**
+            var boldMatch = StandaloneBoldLinePattern.Match(line);
+            if (boldMatch.Success)
+                return (3, boldMatch.Groups["text"].Value.Trim());
+
+            // ALL-CAPS line (at least 3 chars, mostly uppercase letters/digits/spaces, not a table row)
+            if (trimmed.Length >= 3
+                && !trimmed.StartsWith("|")
+                && !trimmed.StartsWith("#")
+                && IsAllCapsHeading(trimmed))
+                return (3, trimmed);
+        }
+
+        return null;
+    }
+
+    private static bool IsAllCapsHeading(string text)
+    {
+        // Must contain at least 2 letter characters
+        int letterCount = 0;
+        int upperCount = 0;
+
+        foreach (var c in text)
+        {
+            if (char.IsLetter(c))
+            {
+                letterCount++;
+                if (char.IsUpper(c)) upperCount++;
+            }
+        }
+
+        // Must have at least 2 letters and >80% uppercase
+        return letterCount >= 2 && upperCount >= letterCount * 0.8;
+    }
+
+    private (int Level, string Text)? RunHeadingScript(string line, int index, string[] allLines)
+    {
+        try
+        {
+            var engine = new Engine(options => options
+                .LimitRecursion(64)
+                .TimeoutInterval(TimeSpan.FromMilliseconds(200))
+                .MaxStatements(1000));
+
+            engine.Execute(_headingScript!);
+
+            var result = engine.Invoke("detectHeading", line, index, allLines);
+
+            if (result.IsNull() || result.IsUndefined())
+                return null;
+
+            var obj = result.AsObject();
+            var level = (int)obj.Get("level").AsNumber();
+            var text = obj.Get("text").AsString();
+
+            if (!string.IsNullOrWhiteSpace(text) && level > 0)
+                return (level, text);
+        }
+        catch
+        {
+            // Script errors are silently ignored for robustness
+        }
+
+        return null;
     }
 
     // ── Semantic splitting within a section ──────────────────────────────
@@ -268,11 +439,88 @@ public class MarkdownChunker
 
         foreach (var sent in sentences)
         {
+            // If a single sentence exceeds chunk size, split it further
+            if (CountTokens(sent) > _chunkSize)
+            {
+                if (!string.IsNullOrEmpty(current))
+                {
+                    chunks.Add(current);
+                    current = "";
+                }
+                chunks.AddRange(SplitByCommaOrWords(sent));
+                continue;
+            }
+
             var combined = string.IsNullOrEmpty(current) ? sent : $"{current} {sent}";
             if (CountTokens(combined) > _chunkSize && !string.IsNullOrEmpty(current))
             {
                 chunks.Add(current);
                 current = sent;
+            }
+            else
+            {
+                current = combined;
+            }
+        }
+
+        if (!string.IsNullOrEmpty(current))
+            chunks.Add(current);
+
+        return chunks;
+    }
+
+    private List<string> SplitByCommaOrWords(string text)
+    {
+        // Try splitting by commas first
+        var parts = text.Split(',')
+            .Select(p => p.Trim())
+            .Where(p => !string.IsNullOrEmpty(p))
+            .ToList();
+
+        if (parts.Count > 1)
+        {
+            var chunks = new List<string>();
+            var current = "";
+
+            foreach (var part in parts)
+            {
+                var combined = string.IsNullOrEmpty(current) ? part : $"{current}, {part}";
+                if (CountTokens(combined) > _chunkSize && !string.IsNullOrEmpty(current))
+                {
+                    chunks.Add(current);
+                    current = part;
+                }
+                else
+                {
+                    current = combined;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(current))
+                chunks.Add(current);
+
+            // Check if all chunks fit; if any still too large, fall through to word splitting
+            if (chunks.All(c => CountTokens(c) <= _chunkSize))
+                return chunks;
+        }
+
+        // Fall back to word splitting
+        return SplitByWords(text);
+    }
+
+    private List<string> SplitByWords(string text)
+    {
+        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var chunks = new List<string>();
+        var current = "";
+
+        foreach (var word in words)
+        {
+            var combined = string.IsNullOrEmpty(current) ? word : $"{current} {word}";
+            if (CountTokens(combined) > _chunkSize && !string.IsNullOrEmpty(current))
+            {
+                chunks.Add(current);
+                current = word;
             }
             else
             {
