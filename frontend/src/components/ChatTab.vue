@@ -69,7 +69,8 @@ async function ensureHub() {
     .build()
 
   hubConnection.on('chat-status', (event: { sessionId: string; status: string }) => {
-    if (event.sessionId === sessionId.value && loading.value) {
+    // Accept status if loading — on first message, sessionId may not be set yet
+    if (loading.value) {
       statusText.value = event.status
     }
   })
@@ -175,10 +176,14 @@ async function loadViewerChunks(docId: string, targetText?: string) {
   try {
     const { data } = await getDocumentChunks(docId, collection.value)
     viewerChunks.value = data.chunks
-    // Scroll to matching chunk
+    // Scroll to matching chunk — use substring match since search result text may differ slightly
     if (targetText) {
       await nextTick()
+      // Try exact match first, then substring (first 100 chars)
+      const snippet = targetText.slice(0, 100)
       const match = viewerChunks.value.find(c => c.text === targetText)
+        ?? viewerChunks.value.find(c => c.text.includes(snippet))
+        ?? viewerChunks.value.find(c => targetText.includes(c.text.slice(0, 100)))
       if (match) {
         highlightChunkId.value = match.id
         await nextTick()
@@ -303,8 +308,8 @@ function getRefSummary(chunk: ChunkResult): string {
                     <td class="py-1.5 pr-2 w-8">
                       <span :class="['inline-flex items-center justify-center w-5 h-5 text-[10px] text-white rounded-full font-bold', badgeColor(ci)]">{{ ci + 1 }}</span>
                     </td>
-                    <td class="py-1.5 pr-3 text-slate-300 font-medium">{{ msg.chunks![ci].metadata?.section || '—' }}</td>
-                    <td class="py-1.5 text-slate-500">{{ msg.chunks![ci].metadata?.filename || '' }}</td>
+                    <td class="py-1.5 pr-3 text-slate-300 font-medium">{{ msg.chunks![ci].metadata?.section || msg.chunks![ci].text.slice(0, 60) + '...' }}</td>
+                    <td class="py-1.5 text-slate-500 whitespace-nowrap">{{ msg.chunks![ci].metadata?.filename || '' }}</td>
                   </tr>
                 </tbody>
               </table>

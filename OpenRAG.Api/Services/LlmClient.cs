@@ -34,7 +34,15 @@ public class LlmClient(HttpClient http, AppSettingsService appSettings, ILogger<
         var contextChunks = chunks.Take(8).ToList();
         var contextBuilder = new StringBuilder();
         for (int i = 0; i < contextChunks.Count; i++)
-            contextBuilder.AppendLine($"[{i + 1}] {contextChunks[i].Text}");
+        {
+            var c = contextChunks[i];
+            var source = c.Metadata.TryGetValue("filename", out var fn) ? fn?.ToString() ?? "" : "";
+            var section = c.Metadata.TryGetValue("section", out var sec) ? sec?.ToString() ?? "" : "";
+            var label = string.IsNullOrEmpty(section) ? source : $"{section} ({source})";
+            contextBuilder.AppendLine($"[{i + 1}] (Source: {label})");
+            contextBuilder.AppendLine(c.Text);
+            contextBuilder.AppendLine();
+        }
 
         var systemPrompt = string.IsNullOrWhiteSpace(settings.SystemPrompt)
             ? $"""
@@ -42,11 +50,19 @@ public class LlmClient(HttpClient http, AppSettingsService appSettings, ILogger<
                 When referencing information from the context, cite the source number like [1], [2], etc.
                 If the context does not contain enough information to answer, say so clearly.
 
+                CRITICAL RULES:
+                - Use ONLY terminology, abbreviations, and phrases that appear EXACTLY in the context below.
+                - Do NOT invent or guess abbreviations. If the context uses "phòng, chống rửa tiền", use that exact phrase — do not abbreviate to anything not found in the context.
+                - When citing a specific regulation, include the Article (Điều), Clause (Khoản), and Point (Điểm) numbers if present in the context.
+                - Answer in the same language as the user's question.
+
                 Context:
                 {contextBuilder}
                 """
             : $"""
                 {settings.SystemPrompt}
+
+                CRITICAL: Use ONLY terminology and abbreviations that appear EXACTLY in the context. Do NOT invent abbreviations.
 
                 Context:
                 {contextBuilder}
