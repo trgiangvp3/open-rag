@@ -36,7 +36,7 @@ class Reranker:
         if not chunks:
             return []
 
-        pairs = [(query, c["text"]) for c in chunks]
+        pairs = [(query, c["text"] or "") for c in chunks]
         scores = self.model.predict(pairs)
 
         ranked = sorted(zip(chunks, scores), key=lambda x: x[1], reverse=True)
