@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
+using OpenRAG.Api.Hubs;
 using OpenRAG.Api.Models.Dto.Requests;
 using OpenRAG.Api.Models.Dto.Responses;
 using OpenRAG.Api.Services;
@@ -7,23 +9,30 @@ namespace OpenRAG.Api.Controllers;
 
 [ApiController]
 [Route("api/search")]
-public class SearchController(MlClient ml, LlmClient llm, CollectionService collections) : ControllerBase
+public class SearchController(MlClient ml, LlmClient llm, CollectionService collections, IHubContext<ProgressHub> hub) : ControllerBase
 {
+    private Task EmitStatus(string status) =>
+        hub.Clients.All.SendAsync("search-status", new { status });
+
     [HttpPost]
     public async Task<IActionResult> Search([FromBody] SearchRequest req, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(req.Query))
             return BadRequest(new { detail = "Query is required" });
 
+        await EmitStatus("Tìm kiếm tài liệu liên quan...");
         var results = await RetrieveAsync(req.Query, req.Collection, req.TopK,
             req.UseReranker, req.SearchMode, req.QueryStrategy, ct);
 
         if (req.Generate && llm.IsEnabled)
         {
+            await EmitStatus("Sinh câu trả lời...");
             var generated = await llm.GenerateAsync(req.Query, results, ct: ct);
+            await EmitStatus("");
             return Ok(new SearchResponse(req.Query, results, results.Count, generated?.Answer, generated?.Citations));
         }
 
+        await EmitStatus("");
         return Ok(new SearchResponse(req.Query, results, results.Count));
     }
 
@@ -36,6 +45,7 @@ public class SearchController(MlClient ml, LlmClient llm, CollectionService coll
             return await ml.SearchAsync(query, collection, topK, useReranker, searchMode, ct);
 
         // For LLM-based strategies: get context first
+        await EmitStatus("Thu thập ngữ cảnh từ tài liệu...");
         var collectionDesc = await collections.GetDescriptionAsync(collection, ct);
         var prelimResults = await ml.SearchAsync(query, collection, 3, false, "semantic", ct);
         var sampleTexts = prelimResults.Select(r => r.Text).ToList();
@@ -53,14 +63,17 @@ public class SearchController(MlClient ml, LlmClient llm, CollectionService coll
         string query, string collection, int topK, bool useReranker, string searchMode,
         string? collectionDesc, List<string> sampleTexts, CancellationToken ct)
     {
+        await EmitStatus("Sinh biến thể câu hỏi (LLM)...");
         var altQueries = await llm.GenerateQueriesAsync(query, 3, collectionDesc, sampleTexts, ct: ct);
         var allQueries = new List<string> { query };
         if (altQueries is not null) allQueries.AddRange(altQueries);
 
+        await EmitStatus($"Tìm kiếm {allQueries.Count} queries...");
         var all = new List<ChunkResult>();
         foreach (var q in allQueries)
             all.AddRange(await ml.SearchAsync(q, collection, topK, useReranker, searchMode, ct));
 
+        await EmitStatus("Tổng hợp kết quả...");
         return Deduplicate(all, topK);
     }
 
@@ -68,10 +81,12 @@ public class SearchController(MlClient ml, LlmClient llm, CollectionService coll
         string query, string collection, int topK, bool useReranker, string searchMode,
         string? collectionDesc, List<string> sampleTexts, CancellationToken ct)
     {
+        await EmitStatus("Sinh tài liệu tham chiếu (HyDE)...");
         var hypothetical = await llm.GenerateHypotheticalAsync(query, collectionDesc, sampleTexts, ct: ct);
         if (hypothetical is null)
             return await ml.SearchAsync(query, collection, topK, useReranker, searchMode, ct);
 
+        await EmitStatus("Tìm kiếm bằng embedding giả...");
         var hydeResults = await ml.SearchWithTextAsync(hypothetical, collection, topK, useReranker, "semantic", ct);
         if (searchMode == "hybrid")
         {
@@ -86,10 +101,12 @@ public class SearchController(MlClient ml, LlmClient llm, CollectionService coll
         string query, string collection, int topK, bool useReranker, string searchMode,
         string? collectionDesc, List<string> sampleTexts, CancellationToken ct)
     {
+        await EmitStatus("Sinh queries + tài liệu tham chiếu (LLM)...");
         var multiTask = MultiQueryAsync(query, collection, topK, useReranker, searchMode, collectionDesc, sampleTexts, ct);
         var hydeTask = HydeAsync(query, collection, topK, useReranker, searchMode, collectionDesc, sampleTexts, ct);
         await Task.WhenAll(multiTask, hydeTask);
 
+        await EmitStatus("Tổng hợp kết quả đa chiều...");
         var all = new List<ChunkResult>();
         all.AddRange(multiTask.Result);
         all.AddRange(hydeTask.Result);

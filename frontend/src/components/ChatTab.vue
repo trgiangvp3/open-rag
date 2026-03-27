@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted, onUnmounted } from 'vue'
+defineOptions({ name: 'ChatTab' })
+import { ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import * as signalR from '@microsoft/signalr'
 import { marked } from 'marked'
 import { chat, getChatHistory, deleteChatSession, getDocumentChunks, type ChunkResult, type DocumentChunk } from '../api'
@@ -27,6 +28,7 @@ const queryStrategy = ref<'direct' | 'multi-query' | 'hyde' | 'multi-query+hyde'
 const retrievalMode = ref('hybrid')
 
 const SESSION_KEY = 'openrag_chat_session_id'
+const MESSAGES_KEY = 'openrag_chat_messages'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -80,9 +82,21 @@ async function ensureHub() {
   try { await hubConnection.start() } catch { hubConnection = null }
 }
 
+// Persist messages (with chunks/citations) to localStorage
+function saveMessages() {
+  try { localStorage.setItem(MESSAGES_KEY, JSON.stringify(messages.value)) } catch {}
+}
+watch(messages, saveMessages, { deep: true })
+
 onMounted(() => {
   ensureHub()
-  if (sessionId.value) {
+  // Load from localStorage first (includes chunks/citations)
+  const saved = localStorage.getItem(MESSAGES_KEY)
+  if (saved) {
+    try { messages.value = JSON.parse(saved) } catch {}
+  }
+  // If no local data but session exists, fallback to API (text only)
+  if (!messages.value.length && sessionId.value) {
     getChatHistory(sessionId.value).then(({ data }) => {
       messages.value = data.messages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
     }).catch(() => {
@@ -141,6 +155,7 @@ function newConversation() {
   if (sessionId.value) deleteChatSession(sessionId.value).catch(() => {})
   sessionId.value = null
   localStorage.removeItem(SESSION_KEY)
+  localStorage.removeItem(MESSAGES_KEY)
   messages.value = []
   error.value = ''
   viewerOpen.value = false
@@ -157,39 +172,41 @@ function isCited(msg: Message, idx: number) {
 
 // ── Source viewer ────────────────────────────────────────────────────────────
 
-async function openSource(chunk: ChunkResult, idx: number) {
-  const docId = chunk.metadata.document_id
+// Show only the cited chunk directly — no need to load all document chunks
+function openSource(chunk: ChunkResult, idx: number) {
+  viewerOpen.value = true
+  viewerTitle.value = chunk.metadata.filename ?? 'Nguồn'
+  activeSourceIdx.value = idx
+  // Show just this one chunk in the viewer
+  viewerChunks.value = [{
+    id: `source-${idx}`,
+    text: chunk.text,
+    metadata: chunk.metadata as Record<string, string>,
+  }]
+  highlightChunkId.value = `source-${idx}`
+  viewerLoading.value = false
+}
+
+// Load full document chunks when user wants to see context
+async function loadFullDocument(chunk: ChunkResult) {
+  const docId = (chunk.metadata.document_id ?? '') as string
   if (!docId) return
 
   viewerDocId.value = docId
-  viewerOpen.value = true
-  viewerTitle.value = chunk.metadata.filename ?? docId
-  activeSourceIdx.value = idx
-  // Find the chunk ID from metadata to highlight
-  highlightChunkId.value = null
-  await loadViewerChunks(docId, chunk.text)
-}
-
-async function loadViewerChunks(docId: string, targetText?: string) {
   viewerLoading.value = true
-  viewerChunks.value = []
   try {
     const { data } = await getDocumentChunks(docId, collection.value)
     viewerChunks.value = data.chunks
-    // Scroll to matching chunk — use substring match since search result text may differ slightly
-    if (targetText) {
+    // Find and highlight the matching chunk
+    await nextTick()
+    const snippet = chunk.text.slice(0, 100)
+    const match = viewerChunks.value.find(c => c.text === chunk.text)
+      ?? viewerChunks.value.find(c => c.text.includes(snippet))
+      ?? viewerChunks.value.find(c => chunk.text.includes(c.text.slice(0, 100)))
+    if (match) {
+      highlightChunkId.value = match.id
       await nextTick()
-      // Try exact match first, then substring (first 100 chars)
-      const snippet = targetText.slice(0, 100)
-      const match = viewerChunks.value.find(c => c.text === targetText)
-        ?? viewerChunks.value.find(c => c.text.includes(snippet))
-        ?? viewerChunks.value.find(c => targetText.includes(c.text.slice(0, 100)))
-      if (match) {
-        highlightChunkId.value = match.id
-        await nextTick()
-        const el = document.getElementById(`viewer-chunk-${match.id}`)
-        el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      }
+      document.getElementById(`viewer-chunk-${match.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }
   } catch {
     viewerChunks.value = []
@@ -198,13 +215,14 @@ async function loadViewerChunks(docId: string, targetText?: string) {
   }
 }
 
-// ── Reference table helper ───────────────────────────────────────────────────
+// ── Reference helpers ────────────────────────────────────────────────────────
 
-function getRefSummary(chunk: ChunkResult): string {
-  const section = chunk.metadata?.section ?? ''
-  const filename = chunk.metadata?.filename ?? ''
-  if (section && filename) return `${section} — ${filename}`
-  return section || filename || 'Không rõ nguồn'
+function getSection(chunk: ChunkResult): string {
+  return (chunk.metadata?.section ?? '') as string
+}
+
+function getFilename(chunk: ChunkResult): string {
+  return (chunk.metadata?.filename ?? '') as string
 }
 </script>
 
@@ -299,20 +317,19 @@ function getRefSummary(chunk: ChunkResult): string {
 
             <!-- Reference table -->
             <div v-if="msg.chunks?.length && msg.citations?.length" class="bg-slate-800/30 border border-slate-700/30 rounded-xl px-4 py-3">
-              <p class="text-slate-500 text-[10px] uppercase tracking-wider mb-2">Bảng tham chiếu</p>
-              <table class="w-full text-xs">
-                <tbody>
-                  <tr v-for="ci in msg.citations" :key="ci"
-                    class="border-b border-slate-700/20 last:border-0 hover:bg-slate-700/20 cursor-pointer transition-colors"
-                    @click="openSource(msg.chunks![ci], ci)">
-                    <td class="py-1.5 pr-2 w-8">
-                      <span :class="['inline-flex items-center justify-center w-5 h-5 text-[10px] text-white rounded-full font-bold', badgeColor(ci)]">{{ ci + 1 }}</span>
-                    </td>
-                    <td class="py-1.5 pr-3 text-slate-300 font-medium">{{ msg.chunks![ci].metadata?.section || msg.chunks![ci].text.slice(0, 60) + '...' }}</td>
-                    <td class="py-1.5 text-slate-500 whitespace-nowrap">{{ msg.chunks![ci].metadata?.filename || '' }}</td>
-                  </tr>
-                </tbody>
-              </table>
+              <p class="text-slate-500 text-[10px] uppercase tracking-wider mb-2">Tham chiếu</p>
+              <div class="space-y-1">
+                <div v-for="ci in msg.citations" :key="ci"
+                  class="flex items-start gap-2 py-1.5 border-b border-slate-700/20 last:border-0 hover:bg-slate-700/20 cursor-pointer transition-colors rounded px-1"
+                  @click="openSource(msg.chunks![ci], ci)">
+                  <span :class="['inline-flex items-center justify-center w-5 h-5 text-[10px] text-white rounded-full font-bold flex-shrink-0 mt-0.5', badgeColor(ci)]">{{ ci + 1 }}</span>
+                  <div class="min-w-0">
+                    <p v-if="getSection(msg.chunks![ci])" class="text-slate-200 text-xs font-medium">{{ getSection(msg.chunks![ci]) }}</p>
+                    <p class="text-slate-500 text-[11px]">{{ getFilename(msg.chunks![ci]) }}</p>
+                    <p v-if="!getSection(msg.chunks![ci])" class="text-slate-400 text-[11px] truncate">{{ msg.chunks![ci].text.slice(0, 80) }}...</p>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- Source pills -->
@@ -365,17 +382,29 @@ function getRefSummary(chunk: ChunkResult): string {
       </div>
     </div>
 
-    <!-- Col 3: Document viewer — chunks mode, scroll to specific chunk -->
+    <!-- Col 3: Source viewer -->
     <div v-if="viewerOpen" class="w-[38%] flex-shrink-0 flex flex-col min-w-0 bg-slate-900/30">
+      <!-- Header -->
       <div class="p-3 border-b border-slate-700/50 flex items-center justify-between bg-slate-800/30">
         <div class="flex items-center gap-2 min-w-0">
           <span v-if="activeSourceIdx !== null" :class="['inline-flex items-center justify-center w-5 h-5 text-[10px] text-white rounded-full font-bold shadow-sm', badgeColor(activeSourceIdx)]">{{ activeSourceIdx + 1 }}</span>
-          <p class="text-slate-200 text-sm font-medium truncate">{{ viewerTitle }}</p>
+          <div class="min-w-0">
+            <p class="text-slate-200 text-sm font-medium truncate">{{ viewerTitle }}</p>
+            <p v-if="viewerChunks.length === 1 && viewerChunks[0].metadata?.section" class="text-slate-400 text-xs truncate">{{ viewerChunks[0].metadata.section }}</p>
+          </div>
         </div>
-        <button @click="viewerOpen = false; activeSourceIdx = null; highlightChunkId = null"
-          class="w-7 h-7 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-700/50 transition-all">&times;</button>
+        <div class="flex items-center gap-1.5 flex-shrink-0">
+          <button v-if="viewerChunks.length === 1 && viewerChunks[0].metadata?.document_id"
+            @click="loadFullDocument(viewerChunks[0] as any)"
+            class="px-2 py-1 text-[10px] text-slate-400 hover:text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-600/50 rounded transition-all">
+            Xem toàn văn
+          </button>
+          <button @click="viewerOpen = false; activeSourceIdx = null; highlightChunkId = null"
+            class="w-7 h-7 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-700/50 transition-all">&times;</button>
+        </div>
       </div>
 
+      <!-- Content -->
       <div v-if="viewerLoading" class="flex-1 flex items-center justify-center">
         <div class="flex items-center gap-2 text-slate-500 text-sm">
           <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -388,13 +417,17 @@ function getRefSummary(chunk: ChunkResult): string {
       <div v-else class="flex-1 overflow-y-auto">
         <div v-for="(chunk, i) in viewerChunks" :key="chunk.id"
           :id="`viewer-chunk-${chunk.id}`"
-          :class="['border-b border-slate-800/50 transition-all', highlightChunkId === chunk.id ? 'bg-violet-900/20 border-l-2 border-l-violet-500' : '']">
-          <div class="px-4 py-1.5 bg-slate-800/30 flex items-center gap-2">
+          :class="['border-b border-slate-800/50 transition-all', highlightChunkId === chunk.id ? 'bg-violet-900/15 border-l-2 border-l-violet-500' : '']">
+          <div v-if="viewerChunks.length > 1" class="px-4 py-1.5 bg-slate-800/30 flex items-center gap-2">
             <span class="text-violet-400/70 text-[10px] font-mono">#{{ i }}</span>
             <span v-if="chunk.metadata?.section" class="text-slate-500 text-xs truncate">{{ chunk.metadata.section }}</span>
           </div>
-          <div class="px-4 py-2.5">
-            <div class="prose prose-invert prose-sm max-w-none text-xs prose-p:text-slate-400" v-html="renderMdPlain(chunk.text)" />
+          <div class="px-5 py-4">
+            <div class="prose prose-invert prose-sm max-w-none
+              prose-p:text-slate-300 prose-p:my-2 prose-p:leading-relaxed
+              prose-headings:text-slate-100 prose-strong:text-white
+              prose-code:text-violet-300 prose-code:bg-slate-700/50 prose-code:px-1 prose-code:rounded"
+              v-html="renderMdPlain(chunk.text)" />
           </div>
         </div>
       </div>

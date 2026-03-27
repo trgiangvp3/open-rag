@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import * as signalR from '@microsoft/signalr'
 import { uploadFile, ingestText, createCollection } from '../api'
 import { useCollectionsStore } from '../stores/collections'

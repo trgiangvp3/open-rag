@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { health } from './api'
 import { useCollectionsStore } from './stores/collections'
 import SearchTab from './components/SearchTab.vue'
@@ -68,12 +68,14 @@ const tabs = [
 
     <!-- Content -->
     <main class="px-6 py-6">
-      <SearchTab v-if="tab === 'search'" />
-      <ChatTab v-else-if="tab === 'chat'" />
-      <UploadTab v-else-if="tab === 'upload'" />
-      <DocumentsTab v-else-if="tab === 'documents'" />
-      <CollectionsTab v-else-if="tab === 'collections'" />
-      <SettingsTab v-else-if="tab === 'settings'" />
+      <KeepAlive include="ChatTab,SearchTab">
+        <SearchTab v-if="tab === 'search'" />
+        <ChatTab v-else-if="tab === 'chat'" />
+        <UploadTab v-else-if="tab === 'upload'" />
+        <DocumentsTab v-else-if="tab === 'documents'" />
+        <CollectionsTab v-else-if="tab === 'collections'" />
+        <SettingsTab v-else-if="tab === 'settings'" />
+      </KeepAlive>
     </main>
   </div>
 </template>
