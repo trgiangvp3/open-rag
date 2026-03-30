@@ -181,6 +181,7 @@ async def search(req: SearchRequest):
         collection_name=req.collection,
         query_embedding=query_embedding,
         top_k=semantic_top_k,
+        where=req.metadata_filter,
     )
 
     # semantic_results is already list[dict] from store.search()
@@ -189,7 +190,8 @@ async def search(req: SearchRequest):
     if req.search_mode == "hybrid":
         raw = await loop.run_in_executor(
             None,
-            lambda: hybrid_searcher.hybrid_search(req.collection, req.query, raw, req.top_k),
+            lambda: hybrid_searcher.hybrid_search(req.collection, req.query, raw, req.top_k,
+                                                   metadata_filter=req.metadata_filter),
         )
 
     if req.use_reranker:

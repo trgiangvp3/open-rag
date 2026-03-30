@@ -9,5 +9,12 @@ public record SearchRequest(
     bool UseReranker = false,
     string SearchMode = "hybrid",
     string QueryStrategy = "direct",
-    bool Generate = false
+    bool Generate = false,
+    // Metadata filters (hard, ChromaDB WHERE)
+    string? DocumentType = null,
+    string? DateFrom = null,
+    string? DateTo = null,
+    // Facet boost (soft, re-ranking)
+    string? DomainSlug = null,
+    string? Subject = null
 );

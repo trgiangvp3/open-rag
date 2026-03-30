@@ -30,6 +30,7 @@ class SearchRequest(BaseModel):
     top_k: int = 5
     use_reranker: bool = False
     search_mode: str = "semantic"  # "semantic" | "hybrid"
+    metadata_filter: dict | None = None  # ChromaDB where clause
 
 
 class ChunkResult(BaseModel):

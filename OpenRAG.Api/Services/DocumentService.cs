@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using OpenRAG.Api.Data;
@@ -6,6 +7,7 @@ using OpenRAG.Api.Models.Dto.Events;
 using OpenRAG.Api.Models.Dto.Responses;
 using OpenRAG.Api.Models.Entities;
 using OpenRAG.Api.Services.Chunking;
+using OpenRAG.Api.Services.Parsing;
 
 namespace OpenRAG.Api.Services;
 
@@ -34,10 +36,35 @@ public class DocumentService(
     }
 
     public async Task<IngestResponse> IngestFileAsync(
-        Stream fileStream, string filename, string collection, long sizeBytes, CancellationToken ct = default)
+        Stream fileStream, string filename, string collection, long sizeBytes,
+        string? tags = null, CancellationToken ct = default)
+    {
+        var ext = Path.GetExtension(filename).ToLowerInvariant();
+        var isHtml = ext is ".html" or ".htm";
+
+        // For HTML files, read content to check if it's a legal document
+        string? htmlContent = null;
+        if (isHtml)
+        {
+            using var reader = new StreamReader(fileStream, leaveOpen: true);
+            htmlContent = await reader.ReadToEndAsync(ct);
+            fileStream.Position = 0; // Reset for potential ML service use
+        }
+
+        var isLegal = htmlContent is not null && LegalHtmlParser.IsLegalHtml(htmlContent);
+
+        if (isLegal)
+            return await IngestLegalHtmlAsync(htmlContent!, filename, collection, sizeBytes, tags, ct);
+
+        return await IngestGenericFileAsync(fileStream, filename, collection, sizeBytes, tags, ct);
+    }
+
+    /// <summary>Legal HTML pipeline — parse + chunk entirely in C#, only send to ML for embedding.</summary>
+    private async Task<IngestResponse> IngestLegalHtmlAsync(
+        string html, string filename, string collection, long sizeBytes,
+        string? tags, CancellationToken ct)
     {
         var col = await GetOrCreateCollectionAsync(collection, ct);
-        var chunker = CreateChunker(col);
         var documentId = Guid.NewGuid();
         var docIdStr = documentId.ToString();
 
@@ -54,15 +81,75 @@ public class DocumentService(
 
         try
         {
-            // Convert file -> markdown
-            ReportProgress(docIdStr, "converting", 10);
-            var markdown = await ml.ConvertFileAsync(fileStream, filename, ct);
-            doc.MarkdownContent = markdown;
+            // 1. Parse HTML for metadata + structure
+            ReportProgress(docIdStr, "parsing", 10);
+            var legalMeta = LegalHtmlParser.TryParse(html);
+            if (legalMeta is null)
+            {
+                // Fallback: treat as regular markdown
+                logger.LogWarning("Legal HTML detection passed but parser failed for '{Filename}', falling back", filename);
+                var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(html));
+                return await IngestGenericFileInternalAsync(doc, stream, filename, collection, col, tags, ct);
+            }
 
-            // Chunk in .NET
+            // 2. Store metadata on document entity
+            doc.DocumentType = legalMeta.DocumentType;
+            doc.DocumentTypeDisplay = legalMeta.DocumentTypeDisplay;
+            doc.DocumentNumber = legalMeta.DocumentNumber;
+            doc.DocumentTitle = legalMeta.DocumentTitle;
+            doc.IssuingAuthority = legalMeta.IssuingAuthority;
+            doc.SignedLocation = legalMeta.SignedLocation;
+            doc.IssuedDate = legalMeta.IssuedDate;
+            doc.LegalBasisJson = legalMeta.LegalBases.Count > 0
+                ? JsonSerializer.Serialize(legalMeta.LegalBases) : null;
+            doc.TerminologyJson = legalMeta.Terminology.Count > 0
+                ? JsonSerializer.Serialize(legalMeta.Terminology) : null;
+            doc.ReferencedDocsJson = legalMeta.ReferencedDocs.Count > 0
+                ? JsonSerializer.Serialize(legalMeta.ReferencedDocs) : null;
+
+            doc.Tags = tags;
+            doc.SubjectsJson = legalMeta.Subjects.Count > 0
+                ? JsonSerializer.Serialize(legalMeta.Subjects) : null;
+            doc.SuggestedDomainsJson = legalMeta.SuggestedDomains.Count > 0
+                ? JsonSerializer.Serialize(legalMeta.SuggestedDomains) : null;
+
+            // Auto-assign domain if top suggestion has high confidence
+            if (legalMeta.SuggestedDomains.Count > 0)
+            {
+                var top = legalMeta.SuggestedDomains[0];
+                var domain = await db.Domains.FirstOrDefaultAsync(d => d.Slug == top.Slug, ct);
+                if (domain is not null && top.Confidence >= 0.7f)
+                    doc.DomainId = domain.Id;
+            }
+
+            doc.MarkdownContent = legalMeta.PlainText;
+
+            logger.LogInformation(
+                "Parsed legal doc '{Filename}': type={Type}, number={Number}, domain={Domain}, subjects=[{Subjects}]",
+                filename, legalMeta.DocumentTypeDisplay, legalMeta.DocumentNumber,
+                legalMeta.SuggestedDomains.FirstOrDefault()?.Name,
+                string.Join(", ", legalMeta.Subjects.Take(3)));
+
+            // 3. Chunk by legal structure
             ReportProgress(docIdStr, "chunking", 35);
-            var chunks = chunker.Chunk(markdown, new Dictionary<string, string> { ["filename"] = filename });
-            logger.LogInformation("Chunked '{Filename}' into {Count} chunks", filename, chunks.Count);
+            var chunker = new LegalDocumentChunker(legalMeta, chunkSize: col.ChunkSize, chunkOverlap: col.ChunkOverlap);
+            var baseMeta = new Dictionary<string, string> { ["filename"] = filename };
+            if (!string.IsNullOrEmpty(doc.Tags))
+                baseMeta["tags"] = doc.Tags;
+            if (doc.DomainId.HasValue)
+            {
+                var domainEntity = await db.Domains.Include(d => d.Parent).FirstOrDefaultAsync(d => d.Id == doc.DomainId, ct);
+                if (domainEntity is not null)
+                {
+                    baseMeta["domain"] = domainEntity.Slug;
+                    if (domainEntity.Parent is not null)
+                        baseMeta["domain_parent"] = domainEntity.Parent.Slug;
+                }
+            }
+            if (legalMeta.Subjects.Count > 0)
+                baseMeta["subjects"] = string.Join(",", legalMeta.Subjects);
+            var chunks = chunker.Chunk("", baseMeta);
+            logger.LogInformation("Chunked legal doc '{Filename}' into {Count} chunks", filename, chunks.Count);
 
             if (chunks.Count == 0)
             {
@@ -74,7 +161,7 @@ public class DocumentService(
                 return new IngestResponse(docIdStr, filename, 0, "No content extracted");
             }
 
-            // Embed + store via ML service
+            // 4. Embed + store via ML service
             ReportProgress(docIdStr, "embedding", 55);
             var mlChunks = chunks.Select(c => new MlChunkInput(c.Text, c.Metadata)).ToList();
             var result = await ml.IndexChunksAsync(
@@ -87,7 +174,42 @@ public class DocumentService(
             ReportProgress(docIdStr, "done", 100);
 
             return new IngestResponse(docIdStr, filename, result.ChunkCount,
-                $"Indexed {result.ChunkCount} chunks");
+                $"Indexed {result.ChunkCount} chunks (legal: {legalMeta.DocumentTypeDisplay} {legalMeta.DocumentNumber})");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to ingest legal HTML '{Filename}'", filename);
+            doc.Status = "failed";
+            await db.SaveChangesAsync(ct);
+            ReportProgress(docIdStr, "failed", 0);
+            throw;
+        }
+    }
+
+    /// <summary>Generic file pipeline — convert via ML service, then chunk markdown.</summary>
+    private async Task<IngestResponse> IngestGenericFileAsync(
+        Stream fileStream, string filename, string collection, long sizeBytes,
+        string? tags, CancellationToken ct)
+    {
+        var col = await GetOrCreateCollectionAsync(collection, ct);
+        var documentId = Guid.NewGuid();
+        var docIdStr = documentId.ToString();
+
+        var doc = new Document
+        {
+            Id = documentId,
+            Filename = filename,
+            CollectionId = col.Id,
+            SizeBytes = sizeBytes,
+            Status = "indexing",
+            Tags = tags,
+        };
+        db.Documents.Add(doc);
+        await db.SaveChangesAsync(ct);
+
+        try
+        {
+            return await IngestGenericFileInternalAsync(doc, fileStream, filename, collection, col, tags, ct);
         }
         catch (Exception ex)
         {
@@ -97,6 +219,52 @@ public class DocumentService(
             ReportProgress(docIdStr, "failed", 0);
             throw;
         }
+    }
+
+    private async Task<IngestResponse> IngestGenericFileInternalAsync(
+        Document doc, Stream fileStream, string filename, string collection,
+        Collection col, string? tags, CancellationToken ct)
+    {
+        var docIdStr = doc.Id.ToString();
+        var chunker = CreateChunker(col);
+
+        // Convert file -> markdown
+        ReportProgress(docIdStr, "converting", 10);
+        var markdown = await ml.ConvertFileAsync(fileStream, filename, ct);
+        doc.MarkdownContent = markdown;
+
+        // Chunk in .NET
+        ReportProgress(docIdStr, "chunking", 35);
+        var baseMeta = new Dictionary<string, string> { ["filename"] = filename };
+        if (!string.IsNullOrEmpty(tags))
+            baseMeta["tags"] = tags;
+        var chunks = chunker.Chunk(markdown, baseMeta);
+        logger.LogInformation("Chunked '{Filename}' into {Count} chunks", filename, chunks.Count);
+
+        if (chunks.Count == 0)
+        {
+            doc.Status = "indexed";
+            doc.ChunkCount = 0;
+            doc.IndexedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync(ct);
+            ReportProgress(docIdStr, "done", 100);
+            return new IngestResponse(docIdStr, filename, 0, "No content extracted");
+        }
+
+        // Embed + store via ML service
+        ReportProgress(docIdStr, "embedding", 55);
+        var mlChunks = chunks.Select(c => new MlChunkInput(c.Text, c.Metadata)).ToList();
+        var result = await ml.IndexChunksAsync(
+            new MlIndexRequest(docIdStr, collection, mlChunks), ct);
+
+        doc.Status = "indexed";
+        doc.ChunkCount = result.ChunkCount;
+        doc.IndexedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+        ReportProgress(docIdStr, "done", 100);
+
+        return new IngestResponse(docIdStr, filename, result.ChunkCount,
+            $"Indexed {result.ChunkCount} chunks");
     }
 
     public async Task<IngestResponse> IngestTextAsync(
@@ -169,7 +337,14 @@ public class DocumentService(
                 d.Filename,
                 d.Collection.Name,
                 d.ChunkCount,
-                d.CreatedAt.ToString("o")))
+                d.CreatedAt.ToString("o"),
+                d.DocumentType,
+                d.DocumentTypeDisplay,
+                d.DocumentNumber,
+                d.DocumentTitle,
+                d.IssuingAuthority,
+                d.IssuedDate.HasValue ? d.IssuedDate.Value.ToString("yyyy-MM-dd") : null,
+                d.Tags))
             .ToListAsync(ct);
 
         return new DocumentListResponse(docs, docs.Count);
@@ -213,5 +388,16 @@ public class DocumentService(
         await db.SaveChangesAsync(ct);
         await ml.EnsureCollectionAsync(name, ct);
         return col;
+    }
+
+    private static int CountArticles(List<LegalSection> sections)
+    {
+        var count = 0;
+        foreach (var s in sections)
+        {
+            if (s.Type == "article") count++;
+            count += CountArticles(s.Children);
+        }
+        return count;
     }
 }

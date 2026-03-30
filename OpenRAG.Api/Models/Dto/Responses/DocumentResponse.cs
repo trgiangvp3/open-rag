@@ -5,7 +5,14 @@ public record DocumentInfo(
     string Filename,
     string Collection,
     int ChunkCount,
-    string CreatedAt
+    string CreatedAt,
+    string? DocumentType = null,
+    string? DocumentTypeDisplay = null,
+    string? DocumentNumber = null,
+    string? DocumentTitle = null,
+    string? IssuingAuthority = null,
+    string? IssuedDate = null,
+    string? Tags = null
 );
 
 public record DocumentListResponse(List<DocumentInfo> Documents, int Total);

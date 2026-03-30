@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OpenRAG.Api.Data;
 
@@ -10,9 +11,11 @@ using OpenRAG.Api.Data;
 namespace OpenRAG.Api.Data.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260330035758_AddDocumentLegalMetadata")]
+    partial class AddDocumentLegalMetadata
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "8.0.25");
@@ -191,9 +194,6 @@ namespace OpenRAG.Api.Data.Migrations
                     b.Property<string>("DocumentTypeDisplay")
                         .HasColumnType("TEXT");
 
-                    b.Property<int?>("DomainId")
-                        .HasColumnType("INTEGER");
-
                     b.Property<DateTime?>("EffectiveDate")
                         .HasColumnType("TEXT");
 
@@ -229,12 +229,6 @@ namespace OpenRAG.Api.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<string>("SubjectsJson")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("SuggestedDomainsJson")
-                        .HasColumnType("TEXT");
-
                     b.Property<string>("Tags")
                         .HasColumnType("TEXT");
 
@@ -245,182 +239,9 @@ namespace OpenRAG.Api.Data.Migrations
 
                     b.HasIndex("CollectionId");
 
-                    b.HasIndex("DomainId");
-
                     b.HasIndex("Status");
 
                     b.ToTable("Documents");
-                });
-
-            modelBuilder.Entity("OpenRAG.Api.Models.Entities.Domain", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<int?>("ParentId")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("Slug")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ParentId");
-
-                    b.HasIndex("Slug")
-                        .IsUnique();
-
-                    b.ToTable("Domains");
-
-                    b.HasData(
-                        new
-                        {
-                            Id = 1,
-                            Name = "Ngân hàng - Tín dụng",
-                            Slug = "ngan-hang-tin-dung"
-                        },
-                        new
-                        {
-                            Id = 2,
-                            Name = "Tài chính",
-                            Slug = "tai-chinh"
-                        },
-                        new
-                        {
-                            Id = 3,
-                            Name = "Doanh nghiệp",
-                            Slug = "doanh-nghiep"
-                        },
-                        new
-                        {
-                            Id = 4,
-                            Name = "Đầu tư",
-                            Slug = "dau-tu"
-                        },
-                        new
-                        {
-                            Id = 5,
-                            Name = "Công nghệ thông tin",
-                            Slug = "cong-nghe-thong-tin"
-                        },
-                        new
-                        {
-                            Id = 10,
-                            Name = "Quản lý ngoại hối",
-                            ParentId = 1,
-                            Slug = "quan-ly-ngoai-hoi"
-                        },
-                        new
-                        {
-                            Id = 11,
-                            Name = "Thanh toán",
-                            ParentId = 1,
-                            Slug = "thanh-toan"
-                        },
-                        new
-                        {
-                            Id = 12,
-                            Name = "Mạng lưới hoạt động",
-                            ParentId = 1,
-                            Slug = "mang-luoi-hoat-dong"
-                        },
-                        new
-                        {
-                            Id = 13,
-                            Name = "Xếp hạng - Giám sát",
-                            ParentId = 1,
-                            Slug = "xep-hang-giam-sat"
-                        },
-                        new
-                        {
-                            Id = 14,
-                            Name = "Phân loại nợ - Trích lập dự phòng",
-                            ParentId = 1,
-                            Slug = "phan-loai-no"
-                        },
-                        new
-                        {
-                            Id = 15,
-                            Name = "Cho vay",
-                            ParentId = 1,
-                            Slug = "cho-vay"
-                        },
-                        new
-                        {
-                            Id = 16,
-                            Name = "Cấp phép",
-                            ParentId = 1,
-                            Slug = "cap-phep"
-                        },
-                        new
-                        {
-                            Id = 20,
-                            Name = "Thuế - Phí - Lệ phí",
-                            ParentId = 2,
-                            Slug = "thue-phi-le-phi"
-                        },
-                        new
-                        {
-                            Id = 21,
-                            Name = "Kế toán - Kiểm toán",
-                            ParentId = 2,
-                            Slug = "ke-toan-kiem-toan"
-                        },
-                        new
-                        {
-                            Id = 22,
-                            Name = "Ngân sách nhà nước",
-                            ParentId = 2,
-                            Slug = "ngan-sach-nha-nuoc"
-                        },
-                        new
-                        {
-                            Id = 30,
-                            Name = "Thành lập - Đăng ký",
-                            ParentId = 3,
-                            Slug = "thanh-lap-dang-ky"
-                        },
-                        new
-                        {
-                            Id = 31,
-                            Name = "Quản trị - Điều hành",
-                            ParentId = 3,
-                            Slug = "quan-tri-dieu-hanh"
-                        },
-                        new
-                        {
-                            Id = 40,
-                            Name = "Đầu tư nước ngoài",
-                            ParentId = 4,
-                            Slug = "dau-tu-nuoc-ngoai"
-                        },
-                        new
-                        {
-                            Id = 41,
-                            Name = "Chứng khoán",
-                            ParentId = 4,
-                            Slug = "chung-khoan"
-                        },
-                        new
-                        {
-                            Id = 50,
-                            Name = "An toàn thông tin",
-                            ParentId = 5,
-                            Slug = "an-toan-thong-tin"
-                        },
-                        new
-                        {
-                            Id = 51,
-                            Name = "Giao dịch điện tử",
-                            ParentId = 5,
-                            Slug = "giao-dich-dien-tu"
-                        });
                 });
 
             modelBuilder.Entity("OpenRAG.Api.Models.Entities.ChatMessageEntity", b =>
@@ -442,24 +263,7 @@ namespace OpenRAG.Api.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("OpenRAG.Api.Models.Entities.Domain", "Domain")
-                        .WithMany("Documents")
-                        .HasForeignKey("DomainId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
                     b.Navigation("Collection");
-
-                    b.Navigation("Domain");
-                });
-
-            modelBuilder.Entity("OpenRAG.Api.Models.Entities.Domain", b =>
-                {
-                    b.HasOne("OpenRAG.Api.Models.Entities.Domain", "Parent")
-                        .WithMany("Children")
-                        .HasForeignKey("ParentId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.Navigation("Parent");
                 });
 
             modelBuilder.Entity("OpenRAG.Api.Models.Entities.ChatSession", b =>
@@ -469,13 +273,6 @@ namespace OpenRAG.Api.Data.Migrations
 
             modelBuilder.Entity("OpenRAG.Api.Models.Entities.Collection", b =>
                 {
-                    b.Navigation("Documents");
-                });
-
-            modelBuilder.Entity("OpenRAG.Api.Models.Entities.Domain", b =>
-                {
-                    b.Navigation("Children");
-
                     b.Navigation("Documents");
                 });
 #pragma warning restore 612, 618

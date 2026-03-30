@@ -187,12 +187,17 @@ class HybridSearcher:
         semantic_results: list[dict],
         top_k: int,
         k: int = 60,
+        metadata_filter: dict | None = None,
     ) -> list[dict]:
         """Fuse semantic and BM25 results with Reciprocal Rank Fusion.
 
         RRF formula: score(d) = sum 1 / (k + rank_i(d))
         """
         bm25_results = self.bm25_search(collection_name, query, top_k * 10)
+
+        # Post-filter BM25 results by metadata if filter is provided
+        if metadata_filter:
+            bm25_results = [r for r in bm25_results if _matches_filter(r.get("metadata", {}), metadata_filter)]
 
         rrf_scores: dict[str, float] = {}
         text_to_chunk: dict[str, dict] = {}
@@ -228,3 +233,35 @@ class HybridSearcher:
                 "index_path": idx.index_path,
             }
         return result
+
+
+def _matches_filter(metadata: dict, filt: dict) -> bool:
+    """Check if a metadata dict matches a ChromaDB-style where clause.
+
+    Supports: $eq, $contains, $gte, $lte, $and.
+    """
+    for key, value in filt.items():
+        if key == "$and":
+            return all(_matches_filter(metadata, sub) for sub in value)
+        if key == "$or":
+            return any(_matches_filter(metadata, sub) for sub in value)
+
+        meta_val = metadata.get(key)
+        if meta_val is None:
+            return False
+
+        if isinstance(value, dict):
+            for op, operand in value.items():
+                if op == "$eq" and str(meta_val) != str(operand):
+                    return False
+                if op == "$contains" and str(operand) not in str(meta_val):
+                    return False
+                if op == "$gte" and str(meta_val) < str(operand):
+                    return False
+                if op == "$lte" and str(meta_val) > str(operand):
+                    return False
+        else:
+            if str(meta_val) != str(value):
+                return False
+
+    return True

@@ -7,7 +7,7 @@ namespace OpenRAG.Api.Services;
 public record MlChunkInput(string Text, Dictionary<string, string> Metadata);
 public record MlIndexRequest(string DocumentId, string Collection, List<MlChunkInput> Chunks);
 public record MlIndexResponse(string DocumentId, int ChunkCount, bool Ok);
-public record MlSearchRequest(string Query, string Collection, int TopK = 5, bool UseReranker = false, string SearchMode = "semantic");
+public record MlSearchRequest(string Query, string Collection, int TopK = 5, bool UseReranker = false, string SearchMode = "semantic", Dictionary<string, object>? MetadataFilter = null);
 public record MlDeleteDocRequest(string DocumentId, string Collection);
 public record MlDeleteDocResponse(int ChunksDeleted, bool Ok);
 public record MlCollectionRequest(string Name);
@@ -44,9 +44,10 @@ public class MlClient(HttpClient http, ILogger<MlClient> logger)
     public async Task<List<ChunkResult>> SearchAsync(
         string query, string collection, int topK,
         bool useReranker = false, string searchMode = "semantic",
+        Dictionary<string, object>? metadataFilter = null,
         CancellationToken ct = default)
     {
-        var req = new MlSearchRequest(query, collection, topK, useReranker, searchMode);
+        var req = new MlSearchRequest(query, collection, topK, useReranker, searchMode, metadataFilter);
         var response = await http.PostAsJsonAsync("/ml/search", req, JsonOpts, ct);
         response.EnsureSuccessStatusCode();
 

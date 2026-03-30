@@ -1,9 +1,9 @@
 <script setup lang="ts">
 defineOptions({ name: 'SearchTab' })
-import { ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import * as signalR from '@microsoft/signalr'
 import { marked } from 'marked'
-import { search, getDocumentChunks, type ChunkResult, type DocumentChunk } from '../api'
+import { search, getDocumentChunks, listDomains, type ChunkResult, type DocumentChunk, type DomainInfo } from '../api'
 import { useCollectionsStore } from '../stores/collections'
 
 marked.setOptions({ breaks: true, gfm: true })
@@ -29,6 +29,28 @@ const useReranker = ref(true)
 const queryStrategy = ref<'direct' | 'multi-query' | 'hyde' | 'multi-query+hyde'>('direct')
 const retrievalMode = ref<'semantic' | 'hybrid'>('hybrid')
 const generate = ref(false)
+const filterDocumentType = ref('')
+const filterDomainSlug = ref('')
+const filterSubject = ref('')
+const filterDateFrom = ref('')
+const filterDateTo = ref('')
+const domains = ref<DomainInfo[]>([])
+
+// Flatten domains for select options
+const domainOptions = computed(() => {
+  const opts: { slug: string; label: string }[] = []
+  for (const d of domains.value) {
+    opts.push({ slug: d.slug, label: d.name })
+    for (const c of d.children ?? [])
+      opts.push({ slug: c.slug, label: `  ${d.name} > ${c.name}` })
+  }
+  return opts
+})
+
+onMounted(async () => {
+  ensureHub()
+  try { domains.value = (await listDomains()).data.domains } catch {}
+})
 const SEARCH_KEY = 'openrag_search_state'
 
 const results = ref<ChunkResult[]>([])
@@ -92,7 +114,7 @@ async function ensureHub() {
   try { await hubConnection.start() } catch { hubConnection = null }
 }
 
-onMounted(() => { ensureHub() })
+// onMounted moved to domain loading block above
 onUnmounted(async () => {
   if (hubConnection) { try { await hubConnection.stop() } catch {} hubConnection = null }
 })
@@ -111,6 +133,11 @@ async function doSearch() {
       searchMode: retrievalMode.value,
       queryStrategy: queryStrategy.value,
       generate: generate.value,
+      ...(filterDocumentType.value && { documentType: filterDocumentType.value }),
+      ...(filterDomainSlug.value && { domainSlug: filterDomainSlug.value }),
+      ...(filterSubject.value && { subject: filterSubject.value }),
+      ...(filterDateFrom.value && { dateFrom: filterDateFrom.value }),
+      ...(filterDateTo.value && { dateTo: filterDateTo.value }),
     })
     results.value = data.results
     answer.value = data.answer ?? null
@@ -234,6 +261,54 @@ async function loadFullDocument(chunk: any) {
         <input type="checkbox" v-model="generate" class="accent-violet-500 rounded" />
         Tạo câu trả lời (RAG)
       </label>
+
+      <!-- Facet filters -->
+      <div class="border-t border-slate-700/50 pt-3 mt-1">
+        <p class="text-slate-500 text-[10px] uppercase tracking-wider mb-2">Bộ lọc</p>
+
+        <div class="space-y-1">
+          <label class="text-slate-500 text-[10px] uppercase tracking-wider">Lĩnh vực</label>
+          <select v-model="filterDomainSlug"
+            class="w-full bg-slate-800/80 border border-slate-600/50 rounded-lg px-2 py-1.5 text-slate-300 text-xs focus:outline-none focus:border-violet-500">
+            <option value="">Tất cả</option>
+            <option v-for="d in domainOptions" :key="d.slug" :value="d.slug">{{ d.label }}</option>
+          </select>
+        </div>
+
+        <div class="space-y-1 mt-2">
+          <label class="text-slate-500 text-[10px] uppercase tracking-wider">Đối tượng áp dụng</label>
+          <input v-model="filterSubject" type="text" placeholder="VD: ngân hàng thương mại"
+            class="w-full bg-slate-800/80 border border-slate-600/50 rounded-lg px-2 py-1.5 text-slate-300 text-xs focus:outline-none focus:border-violet-500 placeholder-slate-600" />
+        </div>
+
+        <div class="space-y-1 mt-2">
+          <label class="text-slate-500 text-[10px] uppercase tracking-wider">Loại văn bản</label>
+          <select v-model="filterDocumentType"
+            class="w-full bg-slate-800/80 border border-slate-600/50 rounded-lg px-2 py-1.5 text-slate-300 text-xs focus:outline-none focus:border-violet-500">
+            <option value="">Tất cả</option>
+            <option value="luat">Luật</option>
+            <option value="nghi_dinh">Nghị định</option>
+            <option value="thong_tu">Thông tư</option>
+            <option value="quyet_dinh">Quyết định</option>
+            <option value="nghi_quyet">Nghị quyết</option>
+            <option value="chi_thi">Chỉ thị</option>
+            <option value="cong_van">Công văn</option>
+          </select>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2 mt-2">
+          <div class="space-y-1">
+            <label class="text-slate-500 text-[10px] uppercase tracking-wider">Từ ngày</label>
+            <input v-model="filterDateFrom" type="date"
+              class="w-full bg-slate-800/80 border border-slate-600/50 rounded-lg px-2 py-1.5 text-slate-300 text-xs focus:outline-none focus:border-violet-500" />
+          </div>
+          <div class="space-y-1">
+            <label class="text-slate-500 text-[10px] uppercase tracking-wider">Đến ngày</label>
+            <input v-model="filterDateTo" type="date"
+              class="w-full bg-slate-800/80 border border-slate-600/50 rounded-lg px-2 py-1.5 text-slate-300 text-xs focus:outline-none focus:border-violet-500" />
+          </div>
+        </div>
+      </div>
     </aside>
 
     <!-- Col 2: Query + Results -->

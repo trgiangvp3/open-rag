@@ -25,6 +25,13 @@ export interface DocumentInfo {
   collection: string
   chunkCount: number
   createdAt: string
+  documentType?: string
+  documentTypeDisplay?: string
+  documentNumber?: string
+  documentTitle?: string
+  issuingAuthority?: string
+  issuedDate?: string
+  tags?: string
 }
 
 export interface DocumentListResponse {
@@ -75,6 +82,18 @@ export interface SearchOptions {
   searchMode?: 'semantic' | 'hybrid'
   queryStrategy?: 'direct' | 'multi-query' | 'hyde' | 'multi-query+hyde'
   generate?: boolean
+  documentType?: string
+  dateFrom?: string
+  dateTo?: string
+  domainSlug?: string
+  subject?: string
+}
+
+export interface DomainInfo {
+  id: number
+  name: string
+  slug: string
+  children?: DomainInfo[]
 }
 
 export interface ChatRequest {
@@ -101,10 +120,11 @@ export const search = (query: string, collection: string, topK: number, opts: Se
 
 // ── Documents ──────────────────────────────────────────────────────────────
 
-export const uploadFile = (file: File, collection: string) => {
+export const uploadFile = (file: File, collection: string, tags?: string) => {
   const form = new FormData()
   form.append('file', file)
   form.append('collection', collection)
+  if (tags) form.append('tags', tags)
   return api.post<IngestResponse>('/documents/upload', form)
 }
 
@@ -145,6 +165,21 @@ export interface DocumentMarkdownResponse {
 
 export const getDocumentMarkdown = (id: string) =>
   api.get<DocumentMarkdownResponse>(`/documents/${id}/markdown`)
+
+export const getDocumentMetadata = (id: string) =>
+  api.get(`/documents/${id}/metadata`)
+
+export const updateDocumentTags = (id: string, tags: string | null) =>
+  api.put(`/documents/${id}/tags`, { tags })
+
+export const listTags = () =>
+  api.get<{ tags: string[] }>('/tags')
+
+export const listDomains = () =>
+  api.get<{ domains: DomainInfo[] }>('/domains')
+
+export const setDocumentDomain = (id: string, domainId: number | null) =>
+  api.put(`/documents/${id}/domain`, { domainId })
 
 // ── Collections ────────────────────────────────────────────────────────────
 

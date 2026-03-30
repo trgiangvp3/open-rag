@@ -56,13 +56,17 @@ class VectorStore:
         collection_name: str,
         query_embedding: list[float],
         top_k: int = 5,
+        where: dict | None = None,
     ) -> list[dict]:
         collection = self.get_or_create_collection(collection_name)
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            include=["documents", "metadatas", "distances"],
-        )
+        query_args = {
+            "query_embeddings": [query_embedding],
+            "n_results": top_k,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where:
+            query_args["where"] = where
+        results = collection.query(**query_args)
 
         items = []
         for i in range(len(results["ids"][0])):

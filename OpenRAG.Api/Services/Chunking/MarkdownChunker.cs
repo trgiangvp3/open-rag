@@ -6,7 +6,7 @@ namespace OpenRAG.Api.Services.Chunking;
 
 public record Chunk(string Text, int Index, Dictionary<string, string> Metadata);
 
-public class MarkdownChunker
+public class MarkdownChunker : IChunker
 {
     private readonly int _chunkSize;
     private readonly int _chunkOverlap;

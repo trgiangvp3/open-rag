@@ -253,7 +253,11 @@ function sortIndicator(field: string) {
             <span class="text-sm flex-shrink-0" v-html="fileIcon(doc.filename)" />
             <div class="flex-1 min-w-0">
               <p class="text-slate-300 text-xs font-medium truncate">{{ doc.filename }}</p>
-              <p class="text-slate-600 text-xs">{{ doc.chunkCount }} chunks · {{ formatRelative(doc.createdAt) }}</p>
+              <p class="text-slate-600 text-xs">
+                <span v-if="doc.documentTypeDisplay" class="text-violet-400">{{ doc.documentTypeDisplay }}</span>
+                <span v-if="doc.documentNumber" class="text-slate-500"> {{ doc.documentNumber }} ·</span>
+                {{ doc.chunkCount }} chunks · {{ formatRelative(doc.createdAt) }}
+              </p>
             </div>
             <button @click.stop="deleteDoc(doc)"
               class="text-slate-700 hover:text-red-400 text-sm opacity-0 group-hover:opacity-100 flex-shrink-0">&times;</button>
@@ -282,6 +286,17 @@ function sortIndicator(field: string) {
               :class="['px-3 py-1 rounded text-xs transition-colors', viewMode === 'chunks' ? 'bg-violet-600 text-white' : 'text-slate-400 hover:text-slate-200']"
             >Chunks</button>
           </div>
+        </div>
+
+        <!-- Legal metadata -->
+        <div v-if="selectedDoc.documentType" class="px-3 py-2 border-b border-slate-700/50 bg-slate-800/30 space-y-1">
+          <div class="flex flex-wrap gap-1.5 items-center">
+            <span class="text-[10px] bg-violet-600/30 text-violet-300 px-1.5 py-0.5 rounded">{{ selectedDoc.documentTypeDisplay }}</span>
+            <span v-if="selectedDoc.documentNumber" class="text-[10px] bg-slate-700 text-slate-300 px-1.5 py-0.5 rounded font-mono">{{ selectedDoc.documentNumber }}</span>
+            <span v-if="selectedDoc.issuingAuthority" class="text-[10px] text-slate-400">{{ selectedDoc.issuingAuthority }}</span>
+            <span v-if="selectedDoc.issuedDate" class="text-[10px] text-slate-500">· {{ selectedDoc.issuedDate }}</span>
+          </div>
+          <p v-if="selectedDoc.documentTitle" class="text-xs text-slate-400 leading-snug">{{ selectedDoc.documentTitle }}</p>
         </div>
 
         <!-- Content -->

@@ -112,12 +112,12 @@ public class ChatService(AppDbContext db, MlClient ml, LlmClient llm, Collection
         string sessionId, CancellationToken ct)
     {
         if (queryStrategy == "direct")
-            return await ml.SearchAsync(query, collection, topK, useReranker, searchMode, ct);
+            return await ml.SearchAsync(query, collection, topK, useReranker, searchMode, ct: ct);
 
         // Get context for LLM-based strategies
         await EmitStatus(sessionId, "Thu thập ngữ cảnh từ tài liệu...");
         var collectionDesc = await collections.GetDescriptionAsync(collection, ct);
-        var prelimResults = await ml.SearchAsync(query, collection, 3, false, "semantic", ct);
+        var prelimResults = await ml.SearchAsync(query, collection, 3, false, "semantic", ct: ct);
         var sampleTexts = prelimResults.Select(r => r.Text).ToList();
 
         return queryStrategy switch
@@ -125,7 +125,7 @@ public class ChatService(AppDbContext db, MlClient ml, LlmClient llm, Collection
             "multi-query" => await MultiQueryAsync(query, collection, topK, useReranker, searchMode, collectionDesc, sampleTexts, sessionId, ct),
             "hyde" => await HydeAsync(query, collection, topK, useReranker, searchMode, collectionDesc, sampleTexts, sessionId, ct),
             "multi-query+hyde" => await MultiQueryHydeAsync(query, collection, topK, useReranker, searchMode, collectionDesc, sampleTexts, sessionId, ct),
-            _ => await ml.SearchAsync(query, collection, topK, useReranker, searchMode, ct),
+            _ => await ml.SearchAsync(query, collection, topK, useReranker, searchMode, ct: ct),
         };
     }
 
@@ -141,7 +141,7 @@ public class ChatService(AppDbContext db, MlClient ml, LlmClient llm, Collection
         await EmitStatus(sessionId, $"Tìm kiếm {allQueries.Count} queries...");
         var all = new List<ChunkResult>();
         foreach (var q in allQueries)
-            all.AddRange(await ml.SearchAsync(q, collection, topK, useReranker, searchMode, ct));
+            all.AddRange(await ml.SearchAsync(q, collection, topK, useReranker, searchMode, ct: ct));
 
         await EmitStatus(sessionId, "Tổng hợp kết quả...");
         return Deduplicate(all, topK);
@@ -154,13 +154,13 @@ public class ChatService(AppDbContext db, MlClient ml, LlmClient llm, Collection
         await EmitStatus(sessionId, "Sinh tài liệu tham chiếu (HyDE)...");
         var hypothetical = await llm.GenerateHypotheticalAsync(query, collectionDesc, sampleTexts, ct: ct);
         if (hypothetical is null)
-            return await ml.SearchAsync(query, collection, topK, useReranker, searchMode, ct);
+            return await ml.SearchAsync(query, collection, topK, useReranker, searchMode, ct: ct);
 
         await EmitStatus(sessionId, "Tìm kiếm bằng embedding giả...");
         var hydeResults = await ml.SearchWithTextAsync(hypothetical, collection, topK, useReranker, "semantic", ct);
         if (searchMode == "hybrid")
         {
-            var bm25Results = await ml.SearchAsync(query, collection, topK, useReranker, "hybrid", ct);
+            var bm25Results = await ml.SearchAsync(query, collection, topK, useReranker, "hybrid", ct: ct);
             hydeResults.AddRange(bm25Results);
             return Deduplicate(hydeResults, topK);
         }
