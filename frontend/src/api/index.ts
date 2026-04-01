@@ -198,6 +198,28 @@ export const updateCollectionSettings = (name: string, settings: Partial<Collect
 export const testHeadingScript = (name: string, script: string, sampleText: string, settings?: Partial<CollectionSettings>) =>
   api.post<TestScriptResponse>(`/collections/${name}/test-heading-script`, { script, sampleText, ...settings })
 
+// ── Users (admin) ─────────────────────────────────────────────────────────
+
+export interface UserInfo {
+  id: number
+  username: string
+  displayName: string
+  role: string
+  createdAt: string
+}
+
+export const listUsers = () =>
+  api.get<UserInfo[]>('/auth/users')
+
+export const createUser = (username: string, password: string, displayName: string, role: string) =>
+  api.post<UserInfo>('/auth/users', { username, password, displayName, role })
+
+export const changeUserPassword = (id: number, newPassword: string) =>
+  api.put<{ ok: boolean }>(`/auth/users/${id}/password`, { newPassword })
+
+export const deleteUser = (id: number) =>
+  api.delete<{ ok: boolean }>(`/auth/users/${id}`)
+
 // ── Health ─────────────────────────────────────────────────────────────────
 
 export const health = () =>

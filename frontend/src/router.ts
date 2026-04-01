@@ -15,6 +15,12 @@ const router = createRouter({
       meta: { requiresAdmin: true },
     },
     {
+      path: '/users',
+      name: 'users',
+      component: () => import('./components/UsersTab.vue'),
+      meta: { requiresAdmin: true },
+    },
+    {
       path: '/settings',
       name: 'settings',
       component: () => import('./components/SettingsTab.vue'),

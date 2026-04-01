@@ -42,6 +42,7 @@ watch(() => route.name, () => {
 const navItems = [
   { to: '/', label: 'Tìm kiếm', icon: 'search', adminOnly: false },
   { to: '/documents', label: 'Tài liệu', icon: 'docs', adminOnly: true },
+  { to: '/users', label: 'Người dùng', icon: 'users', adminOnly: true },
   { to: '/settings', label: 'Cài đặt', icon: 'settings', adminOnly: true },
 ]
 
