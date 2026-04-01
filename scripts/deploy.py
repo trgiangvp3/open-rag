@@ -1421,6 +1421,32 @@ def _sync_data_to_server(password: str):
 
     remote = f"computerName='{WEB_DEPLOY_URL}',userName='{WEB_DEPLOY_USER}',password='{password}',authType='Basic'"
 
+    def remote_cmd(command: str, wait: int = 30000) -> tuple[bool, str]:
+        """Run a command on the server via MSDeploy runCommand."""
+        cmd = f'"{msdeploy}" -verb:sync -source:runCommand=\'{command}\',waitInterval={wait} -dest:auto,{remote} -allowUntrusted'
+        r = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+        output = (r.stdout + r.stderr).strip()
+        return r.returncode == 0, output
+
+    def stop_ml_service() -> bool:
+        info("Dừng OpenRAG-ML trên server...")
+        ok_stop, out = remote_cmd("net stop OpenRAG-ML", wait=15000)
+        if ok_stop or "is not started" in out or "not been started" in out:
+            ok("OpenRAG-ML đã dừng")
+            time.sleep(2)  # đợi file unlock
+            return True
+        warn(f"Không dừng được ML service: {out[:150]}")
+        return False
+
+    def start_ml_service():
+        info("Khởi động lại OpenRAG-ML trên server...")
+        ok_start, out = remote_cmd("net start OpenRAG-ML", wait=30000)
+        if ok_start or "already been started" in out:
+            ok("OpenRAG-ML đã khởi động")
+        else:
+            warn(f"Không khởi động được ML service: {out[:150]}")
+            warn("Chạy thủ công: net start OpenRAG-ML")
+
     def msdeploy_file(src_path: Path, dest_path: Path) -> tuple[bool, str]:
         """Sync a single file. Returns (success, error_msg)."""
         cmd = f'"{msdeploy}" -verb:sync -source:filePath=\'{src_path}\' -dest:filePath=\'{dest_path}\',{remote} -allowUntrusted'
@@ -1474,6 +1500,9 @@ def _sync_data_to_server(password: str):
             for rel, err in skipped:
                 print(f"    {rel} — {err}")
 
+    # Stop ML service to unlock ChromaDB/BM25 files
+    stopped = stop_ml_service()
+
     # Sync DB → C:\OpenRAG\AppData\openrag.db
     if has_db:
         info("Đồng bộ openrag.db → AppData/...")
@@ -1490,6 +1519,10 @@ def _sync_data_to_server(password: str):
     # Sync bm25/ → C:\OpenRAG\data\bm25\ (file-by-file)
     if has_bm25:
         sync_dir(bm25_dir, INSTALL_DIR / "data" / "bm25", "bm25")
+
+    # Restart ML service
+    if stopped:
+        start_ml_service()
 
 
 def cmd_web_deploy():
