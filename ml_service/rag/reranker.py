@@ -73,6 +73,7 @@ def _schedule_unload_locked() -> None:
 def _try_unload() -> None:
     """Unload reranker if it hasn't been used since the timer was set."""
     global _reranker, _timer
+    did_unload = False
     with _lock:
         if _reranker is None:
             return
@@ -81,12 +82,13 @@ def _try_unload() -> None:
             logger.info("Reranker idle for %ds — unloading to free RAM", int(elapsed))
             _reranker = None
             _timer = None
+            did_unload = True
         else:
             _schedule_unload_locked()
-    # GC outside lock — allows concurrent get_reranker() to proceed
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    if did_unload:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def get_reranker() -> Reranker:

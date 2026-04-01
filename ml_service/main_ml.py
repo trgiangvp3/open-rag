@@ -76,7 +76,7 @@ async def convert_file(
         tmp_path = Path(tmp.name)
 
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         markdown = await asyncio.wait_for(
             loop.run_in_executor(None, lambda: convert_to_markdown(tmp_path, filename)),
             timeout=120,
@@ -104,7 +104,7 @@ async def index_chunks(req: IndexRequest):
     metadatas = [dict(c.metadata) for c in req.chunks]
 
     embedder = get_embedder()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     embeddings = await loop.run_in_executor(
         None, partial(embedder.embed_texts, texts)
     )
@@ -144,7 +144,7 @@ async def embed_text(req: dict):
     search_mode = req.get("search_mode", "semantic")
 
     embedder = get_embedder()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     query_embedding = await loop.run_in_executor(None, lambda: embedder.embed_query(text))
 
     semantic_top_k = top_k * 10 if (use_reranker or search_mode == "hybrid") else top_k
@@ -171,7 +171,7 @@ async def embed_text(req: dict):
 async def search(req: SearchRequest):
     """Embed query and search ChromaDB, with optional hybrid search and reranking."""
     embedder = get_embedder()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     query_embedding = await loop.run_in_executor(
         None, lambda: embedder.embed_query(req.query)
     )

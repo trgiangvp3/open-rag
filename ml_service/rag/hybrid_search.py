@@ -140,6 +140,10 @@ class HybridSearcher:
                 self._indexes[collection_name] = TantivyBM25Index(index_dir)
             return self._indexes[collection_name]
 
+    def get_or_create_index(self, collection_name: str) -> TantivyBM25Index:
+        """Public alias for _get_index."""
+        return self._get_index(collection_name)
+
     # ── Index management ──────────────────────────────────────────────────
 
     def add_chunks(
@@ -235,6 +239,14 @@ class HybridSearcher:
         return result
 
 
+def _compare(a, b, op) -> bool:
+    """Compare values numerically if both are numeric, otherwise as strings."""
+    try:
+        return op(float(a), float(b))
+    except (ValueError, TypeError):
+        return op(str(a), str(b))
+
+
 def _matches_filter(metadata: dict, filt: dict) -> bool:
     """Check if a metadata dict matches a ChromaDB-style where clause.
 
@@ -256,10 +268,12 @@ def _matches_filter(metadata: dict, filt: dict) -> bool:
                     return False
                 if op == "$contains" and str(operand) not in str(meta_val):
                     return False
-                if op == "$gte" and str(meta_val) < str(operand):
-                    return False
-                if op == "$lte" and str(meta_val) > str(operand):
-                    return False
+                if op == "$gte":
+                    if not _compare(meta_val, operand, lambda a, b: a >= b):
+                        return False
+                if op == "$lte":
+                    if not _compare(meta_val, operand, lambda a, b: a <= b):
+                        return False
         else:
             if str(meta_val) != str(value):
                 return False

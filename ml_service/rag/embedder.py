@@ -3,6 +3,8 @@
 Auto-unloads after MODEL_IDLE_TTL seconds of inactivity to free RAM.
 """
 
+from __future__ import annotations
+
 import gc
 import logging
 import threading
@@ -78,6 +80,7 @@ def _schedule_unload_locked() -> None:
 def _try_unload() -> None:
     """Unload embedder if it hasn't been used since the timer was set."""
     global _embedder, _timer
+    did_unload = False
     with _lock:
         if _embedder is None:
             return
@@ -86,13 +89,14 @@ def _try_unload() -> None:
             logger.info("Embedder idle for %ds — unloading to free RAM", int(elapsed))
             _embedder = None
             _timer = None
+            did_unload = True
         else:
             # Used again in the meantime — reschedule
             _schedule_unload_locked()
-    # GC outside lock — allows concurrent get_embedder() to proceed
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    if did_unload:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def get_embedder() -> Embedder:
