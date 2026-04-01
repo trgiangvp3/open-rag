@@ -47,7 +47,8 @@ DOTNET_API = ROOT / "OpenRAG.Api"
 PUBLISH    = ROOT / "publish"
 
 # Đường dẫn server
-INSTALL_DIR = Path(r"C:\OpenRAG")
+INSTALL_DIR = Path(r"C:\OpenRAG")              # ML service, NSSM, Python, models
+IIS_SITE_DIR = Path(r"C:\inetpub\websites\OpenRag")  # .NET API (Web Deploy)
 NSSM_EXE    = INSTALL_DIR / "nssm" / "nssm.exe"
 PY312_DIR   = INSTALL_DIR / "python312"
 PY312_VER   = "3.12.10"
@@ -708,34 +709,48 @@ def cmd_server_deploy():
     shutil.copy2(env_file, ml_dir / ".env")
 
     s("Cấu hình .NET API")
-    api_dir = INSTALL_DIR / "api"
-    prod_config = api_dir / "appsettings.Production.json"
-    if api_dir.exists() and not prod_config.exists():
-        prod_config.write_text(json.dumps({
-            "ConnectionStrings": {"Default": "Data Source=../data/openrag.db"},
-            "MlService": {"BaseUrl": "http://127.0.0.1:8001"},
-            "Urls": "http://127.0.0.1:8000",
-            "Logging": {"LogLevel": {"Default": "Warning", "Microsoft.AspNetCore": "Warning"}},
-        }, indent=2, ensure_ascii=False), encoding="utf-8")
-        ok("Đã tạo appsettings.Production.json")
-    elif api_dir.exists():
-        ok("appsettings.Production.json đã tồn tại")
+    # Tìm thư mục API: IIS site hoặc C:\OpenRAG\api
+    api_dir = None
+    for candidate in [IIS_SITE_DIR, INSTALL_DIR / "api"]:
+        if candidate.exists() and (candidate / "OpenRAG.Api.dll").exists():
+            api_dir = candidate
+            break
+    if api_dir:
+        prod_config = api_dir / "appsettings.Production.json"
+        if not prod_config.exists():
+            prod_config.write_text(json.dumps({
+                "ConnectionStrings": {"Default": "Data Source=AppData/openrag.db"},
+                "MlService": {"BaseUrl": "http://127.0.0.1:8001"},
+                "Logging": {"LogLevel": {"Default": "Warning", "Microsoft.AspNetCore": "Warning"}},
+            }, indent=2, ensure_ascii=False), encoding="utf-8")
+            ok(f"Đã tạo appsettings.Production.json tại {api_dir}")
+        else:
+            ok(f"appsettings.Production.json đã có tại {api_dir}")
+        # Tạo thư mục AppData cho SQLite
+        (api_dir / "AppData").mkdir(exist_ok=True)
+        (api_dir / "logs").mkdir(exist_ok=True)
     else:
-        warn(f"{api_dir} chưa có — sao chép publish/api/ vào trước")
+        info(f"API chưa deploy — sẽ tự cấu hình khi Web Deploy")
+        info(f"  (kiểm tra: {IIS_SITE_DIR})")
 
     s("Tải mô hình AI")
+    # Trên server, lưu model vào C:\OpenRAG\models (không phụ thuộc user profile)
+    server_hf = INSTALL_DIR / "models"
+    server_hf.mkdir(exist_ok=True)
+    info(f"Thư mục mô hình: {server_hf}")
     info("Đang tải mô hình nhúng (lần đầu mất vài phút)...")
     result = subprocess.run(
         [venv_python, "-c",
          "from sentence_transformers import SentenceTransformer; "
          f"m=SentenceTransformer({EMBEDDING_MODEL!r}); "
          "print('dim:', m.get_sentence_embedding_dimension())"],
-        env={**os.environ, "HF_HOME": str(HF_CACHE)},
+        env={**os.environ, "HF_HOME": str(server_hf)},
     )
     if result.returncode == 0:
         ok("Mô hình nhúng sẵn sàng")
     else:
         warn("Tải mô hình thất bại — có thể thử lại sau")
+        info("Thử chạy lại mục này hoặc kiểm tra kết nối mạng")
 
     print(f"\n  {green('✓')} {bold('Triển khai hoàn tất!')}\n")
     pause()
@@ -812,7 +827,7 @@ def cmd_install_services():
     nssm(["set", "OpenRAG-ML", "AppParameters", "main_ml.py"])
     nssm(["set", "OpenRAG-ML", "AppDirectory", str(INSTALL_DIR / "ml_service")])
     nssm(["set", "OpenRAG-ML", "AppEnvironmentExtra",
-          f"DOTENV_PATH={INSTALL_DIR}\\.env", f"HF_HOME={HF_CACHE}"])
+          f"DOTENV_PATH={INSTALL_DIR}\\.env", f"HF_HOME={INSTALL_DIR / 'models'}"])
     nssm(["set", "OpenRAG-ML", "DisplayName", "OpenRAG ML Service"])
     nssm(["set", "OpenRAG-ML", "Description",
           "Dịch vụ ML Python FastAPI (nhúng văn bản, tìm kiếm, xếp hạng lại)"])
@@ -1236,7 +1251,7 @@ def cmd_view_logs():
 #  WEB DEPLOY
 # ══════════════════════════════════════════════════════════════════════════
 
-WEB_DEPLOY_URL  = "https://deploy.giatocnguyenhuu.vn:8172/msdeploy.axd"
+WEB_DEPLOY_URL  = "https://deploy.giatocnguyenhuu.vn:12178/msdeploy.axd"
 WEB_DEPLOY_SITE = "OpenRag"
 WEB_DEPLOY_USER = r"INSTANCE-078585\Administrator"
 PRODUCTION_URL  = "http://vanban.fasoft.vn"
@@ -1313,7 +1328,7 @@ def cmd_web_deploy():
         print()
         print(f"  Kiểm tra:")
         print(f"    1. Web Deploy đã cài trên server chưa?")
-        print(f"    2. Port 8172 đã mở trong firewall?")
+        print(f"    2. Port 12178 đã mở trong firewall?")
         print(f"    3. ASP.NET Core 8.0 Hosting Bundle đã cài?")
         print(f"    4. WebSocket Protocol đã bật trong IIS?")
 
