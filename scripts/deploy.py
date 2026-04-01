@@ -745,11 +745,25 @@ def cmd_server_deploy():
          f"m=SentenceTransformer({EMBEDDING_MODEL!r}); "
          "print('dim:', m.get_sentence_embedding_dimension())"],
         env={**os.environ, "HF_HOME": str(server_hf)},
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode == 0:
         ok("Mô hình nhúng sẵn sàng")
+        if result.stdout.strip():
+            info(result.stdout.strip().splitlines()[-1])
     else:
-        warn("Tải mô hình thất bại — có thể thử lại sau")
+        warn("Tải mô hình thất bại!")
+        # Hiển thị lỗi chi tiết
+        err = result.stderr.strip() if result.stderr else ""
+        out = result.stdout.strip() if result.stdout else ""
+        if err:
+            print()
+            for line in err.splitlines()[-15:]:
+                print(f"    {line}")
+            print()
+        elif out:
+            for line in out.splitlines()[-10:]:
+                print(f"    {line}")
         info("Thử chạy lại mục này hoặc kiểm tra kết nối mạng")
 
     print(f"\n  {green('✓')} {bold('Triển khai hoàn tất!')}\n")
