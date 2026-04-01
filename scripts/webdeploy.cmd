@@ -58,7 +58,7 @@ if errorlevel 1 (
     echo.
     echo  Kiem tra:
     echo    - Web Deploy da cai tren server chua?
-    echo    - Port 8172 co mo trong firewall?
+    echo    - Port 12178 co mo trong firewall?
     echo    - ASP.NET Core 8.0 Hosting Bundle da cai?
     echo    - WebSocket Protocol da bat trong IIS?
     exit /b 1

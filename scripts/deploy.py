@@ -243,9 +243,11 @@ def detect_gpu():
 
 def find_compatible_python():
     """Tìm Python 3.10-3.12. Trả về path hoặc None."""
-    # 1) Python 3.12 đã cài riêng
-    if PY312_DIR.exists() and (PY312_DIR / "python.exe").exists():
-        return str(PY312_DIR / "python.exe")
+    # 1) Python 3.12 đã cài riêng (server hoặc local)
+    for py312 in [PY312_DIR, ROOT / "python312"]:
+        exe = py312 / "python.exe"
+        if exe.exists():
+            return str(exe)
 
     # 2) py launcher
     for minor in (12, 11, 10):
@@ -271,19 +273,37 @@ def get_python_cmd(python_spec):
         return python_spec.split("|")
     return [python_spec]
 
+def _download_progress(block_num, block_size, total_size):
+    """Hiển thị tiến trình tải."""
+    downloaded = block_num * block_size
+    if total_size > 0:
+        pct = min(100, downloaded * 100 // total_size)
+        mb = downloaded / 1024 / 1024
+        total_mb = total_size / 1024 / 1024
+        print(f"\r  › Đang tải: {mb:.0f}/{total_mb:.0f} MB ({pct}%)", end="", flush=True)
+
 def download_python312():
     """Tải và cài Python 3.12 vào INSTALL_DIR/python312."""
     installer = Path(tempfile.gettempdir()) / f"python-{PY312_VER}-amd64.exe"
 
-    if not installer.exists():
-        info(f"Đang tải Python {PY312_VER}...")
+    if not installer.exists() or installer.stat().st_size < 1_000_000:
+        info(f"Đang tải Python {PY312_VER} (~25 MB)...")
+        info(f"URL: {PY312_URL}")
         try:
-            urllib.request.urlretrieve(PY312_URL, str(installer))
+            urllib.request.urlretrieve(PY312_URL, str(installer), _download_progress)
+            print()  # newline sau progress
+            ok(f"Đã tải: {installer}")
         except Exception as e:
+            print()
             fail(f"Tải Python thất bại: {e}")
+            info("Thử tải thủ công:")
+            info(f"  {PY312_URL}")
+            info(f"  Lưu vào: {installer}")
             return None
+    else:
+        ok(f"Installer đã có: {installer}")
 
-    info(f"Cài đặt Python {PY312_VER} vào {PY312_DIR}...")
+    info(f"Đang cài Python {PY312_VER} vào {PY312_DIR}...")
     PY312_DIR.mkdir(parents=True, exist_ok=True)
     result = subprocess.run([
         str(installer), "/quiet",
@@ -294,14 +314,26 @@ def download_python312():
         "Shortcuts=0", "AssociateFiles=0",
     ])
     if result.returncode != 0:
-        fail("Cài đặt Python thất bại!")
+        fail(f"Cài đặt Python thất bại (exit code: {result.returncode})!")
+        info("Thử chạy lại với quyền Administrator")
+        info(f"Hoặc cài thủ công từ: https://www.python.org/downloads/release/python-{PY312_VER.replace('.', '')}/")
         return None
 
     exe = PY312_DIR / "python.exe"
     if exe.exists():
-        ok(f"Đã cài Python 3.12: {exe}")
+        ver = capture([str(exe), "--version"])
+        ok(f"Đã cài {ver}: {exe}")
         return str(exe)
+
     fail("Không tìm thấy python.exe sau khi cài!")
+    info(f"Kiểm tra thư mục: {PY312_DIR}")
+    # Liệt kê nội dung thư mục để debug
+    if PY312_DIR.exists():
+        files = list(PY312_DIR.iterdir())
+        if files:
+            info(f"Nội dung {PY312_DIR}: {', '.join(f.name for f in files[:10])}")
+        else:
+            info(f"Thư mục {PY312_DIR} trống!")
     return None
 
 def ensure_compatible_python():
@@ -318,9 +350,13 @@ def ensure_compatible_python():
     info("PyTorch chưa hỗ trợ Python 3.13+")
 
     if confirm("Tự động tải Python 3.12?", default=True):
-        return download_python312()
+        result = download_python312()
+        if not result:
+            pause()
+        return result
 
     fail("Không có Python tương thích!")
+    pause()
     return None
 
 def create_venv(python_spec, venv_path, force=False):
