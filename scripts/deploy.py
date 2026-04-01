@@ -50,7 +50,7 @@ PUBLISH    = ROOT / "publish"
 INSTALL_DIR = Path(r"C:\OpenRAG")
 NSSM_EXE    = INSTALL_DIR / "nssm" / "nssm.exe"
 PY312_DIR   = INSTALL_DIR / "python312"
-PY312_VER   = "3.12.11"
+PY312_VER   = "3.12.10"
 PY312_URL   = f"https://www.python.org/ftp/python/{PY312_VER}/python-{PY312_VER}-amd64.exe"
 NSSM_URL    = "https://nssm.cc/release/nssm-2.24.zip"
 
