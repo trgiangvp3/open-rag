@@ -65,8 +65,8 @@ class Embedder:
         return self.embed_texts([query])[0]
 
 
-def _schedule_unload() -> None:
-    """Schedule an idle check after MODEL_IDLE_TTL seconds."""
+def _schedule_unload_locked() -> None:
+    """Schedule an idle check. Must be called with _lock held."""
     global _timer
     if _timer is not None:
         _timer.cancel()
@@ -84,14 +84,15 @@ def _try_unload() -> None:
         elapsed = _time.time() - _last_used
         if elapsed >= MODEL_IDLE_TTL:
             logger.info("Embedder idle for %ds — unloading to free RAM", int(elapsed))
-            del _embedder
             _embedder = None
             _timer = None
-            gc.collect()
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
         else:
             # Used again in the meantime — reschedule
-            _schedule_unload()
+            _schedule_unload_locked()
+    # GC outside lock — allows concurrent get_embedder() to proceed
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def get_embedder() -> Embedder:
@@ -101,5 +102,5 @@ def get_embedder() -> Embedder:
         if _embedder is None:
             _embedder = Embedder()
         _last_used = _time.time()
-        _schedule_unload()
+        _schedule_unload_locked()
         return _embedder

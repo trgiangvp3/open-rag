@@ -60,8 +60,8 @@ class Reranker:
         return result
 
 
-def _schedule_unload() -> None:
-    """Schedule an idle check after MODEL_IDLE_TTL seconds."""
+def _schedule_unload_locked() -> None:
+    """Schedule an idle check. Must be called with _lock held."""
     global _timer
     if _timer is not None:
         _timer.cancel()
@@ -79,13 +79,14 @@ def _try_unload() -> None:
         elapsed = _time.time() - _last_used
         if elapsed >= MODEL_IDLE_TTL:
             logger.info("Reranker idle for %ds — unloading to free RAM", int(elapsed))
-            del _reranker
             _reranker = None
             _timer = None
-            gc.collect()
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
         else:
-            _schedule_unload()
+            _schedule_unload_locked()
+    # GC outside lock — allows concurrent get_reranker() to proceed
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def get_reranker() -> Reranker:
@@ -95,5 +96,5 @@ def get_reranker() -> Reranker:
         if _reranker is None:
             _reranker = Reranker()
         _last_used = _time.time()
-        _schedule_unload()
+        _schedule_unload_locked()
         return _reranker

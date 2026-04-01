@@ -315,8 +315,9 @@ async def bm25_stats():
 
 @app.get("/ml/health", response_model=HealthResponse)
 async def health():
-    embedder = get_embedder()
-    return HealthResponse(ok=True, model=EMBEDDING_MODEL, device=embedder.device)
+    from rag.embedder import _embedder
+    device = _embedder.device if _embedder is not None else "unloaded"
+    return HealthResponse(ok=True, model=EMBEDDING_MODEL, device=device)
 
 
 if __name__ == "__main__":
