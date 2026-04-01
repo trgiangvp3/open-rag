@@ -1419,26 +1419,19 @@ def _sync_data_to_server(password: str):
         warn("Hoặc copy thủ công thư mục data/ lên C:\\OpenRAG\\")
         return
 
-    # Parse server hostname from deploy URL
-    from urllib.parse import urlparse
-    parsed = urlparse(WEB_DEPLOY_URL)
-    computer_name = f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname
+    remote = f"computerName='{WEB_DEPLOY_URL}',userName='{WEB_DEPLOY_USER}',password='{password}',authType='Basic'"
 
-    base_args = [
-        msdeploy, "-verb:sync",
-        f"-dest:computerName='{WEB_DEPLOY_URL}',userName='{WEB_DEPLOY_USER}',password='{password}',authType='Basic'",
-        "-allowUntrusted",
-    ]
+    def msdeploy_sync(source_arg: str, dest_arg: str) -> subprocess.CompletedProcess:
+        """Run msdeploy -verb:sync with source (local) and dest (remote)."""
+        cmd = f'"{msdeploy}" -verb:sync -source:{source_arg} -dest:{dest_arg},{remote} -allowUntrusted'
+        return subprocess.run(cmd, capture_output=True, text=True, shell=True)
 
     # Sync DB → C:\OpenRAG\AppData\openrag.db
     if has_db:
         info("Đồng bộ openrag.db → AppData/...")
-        r = subprocess.run(
-            base_args + [
-                f"-source:filePath='{db_file}'",
-                f"-dest:filePath='{INSTALL_DIR / 'AppData' / 'openrag.db'}'",
-            ],
-            capture_output=True, text=True, shell=True,
+        r = msdeploy_sync(
+            f"filePath='{db_file}'",
+            f"filePath='{INSTALL_DIR / 'AppData' / 'openrag.db'}'",
         )
         if r.returncode == 0:
             ok("Đã đồng bộ openrag.db")
@@ -1448,12 +1441,9 @@ def _sync_data_to_server(password: str):
     # Sync chroma/ → C:\OpenRAG\data\chroma\
     if has_chroma:
         info("Đồng bộ chroma/ → data/chroma/...")
-        r = subprocess.run(
-            base_args + [
-                f"-source:contentPath='{chroma_dir}'",
-                f"-dest:contentPath='{INSTALL_DIR / 'data' / 'chroma'}'",
-            ],
-            capture_output=True, text=True, shell=True,
+        r = msdeploy_sync(
+            f"contentPath='{chroma_dir}'",
+            f"contentPath='{INSTALL_DIR / 'data' / 'chroma'}'",
         )
         if r.returncode == 0:
             ok("Đã đồng bộ chroma/")
@@ -1463,12 +1453,9 @@ def _sync_data_to_server(password: str):
     # Sync bm25/ → C:\OpenRAG\data\bm25\
     if has_bm25:
         info("Đồng bộ bm25/ → data/bm25/...")
-        r = subprocess.run(
-            base_args + [
-                f"-source:contentPath='{bm25_dir}'",
-                f"-dest:contentPath='{INSTALL_DIR / 'data' / 'bm25'}'",
-            ],
-            capture_output=True, text=True, shell=True,
+        r = msdeploy_sync(
+            f"contentPath='{bm25_dir}'",
+            f"contentPath='{INSTALL_DIR / 'data' / 'bm25'}'",
         )
         if r.returncode == 0:
             ok("Đã đồng bộ bm25/")
