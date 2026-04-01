@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-OpenRAG — Deploy Manager
-=========================
-All-in-one: setup, build, deploy, services, IIS — single file, interactive menu.
+OpenRAG — Trình quản lý triển khai
+====================================
+Tất cả trong một: cài đặt, build, triển khai, dịch vụ, IIS.
 
-Usage:
-    python scripts/deploy.py              # interactive menu
-    python scripts/deploy.py setup        # dev setup (venv + packages + models)
+Cách dùng:
+    python scripts/deploy.py              # menu tương tác
+    python scripts/deploy.py setup        # cài đặt dev (venv + packages + models)
     python scripts/deploy.py build        # build frontend + publish .NET
-    python scripts/deploy.py deploy       # full server deploy
-    python scripts/deploy.py status       # check services status
+    python scripts/deploy.py deploy       # triển khai lên server
+    python scripts/deploy.py status       # kiểm tra trạng thái dịch vụ
 """
 
 import argparse
@@ -35,18 +35,18 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 # ══════════════════════════════════════════════════════════════════════════
-#  CONFIG
+#  CẤU HÌNH
 # ══════════════════════════════════════════════════════════════════════════
 
 ROOT = Path(__file__).parent.parent.resolve()
 
-# Dev paths
+# Đường dẫn dev
 ML_SERVICE = ROOT / "ml_service"
 FRONTEND   = ROOT / "frontend"
 DOTNET_API = ROOT / "OpenRAG.Api"
 PUBLISH    = ROOT / "publish"
 
-# Server paths
+# Đường dẫn server
 INSTALL_DIR = Path(r"C:\OpenRAG")
 NSSM_EXE    = INSTALL_DIR / "nssm" / "nssm.exe"
 PY312_DIR   = INSTALL_DIR / "python312"
@@ -65,17 +65,17 @@ NPM_CACHE    = SHARED_CACHE / "npm"
 EMBEDDING_MODEL = "BAAI/bge-m3"
 RERANKER_MODEL  = "BAAI/bge-reranker-v2-m3"
 
-# Python version limits
+# Giới hạn phiên bản Python
 PYTHON_MIN = (3, 10)
 PYTHON_MAX = (3, 12)
 
-# Ports
+# Cổng
 API_PORT = 8000
 ML_PORT  = 8001
 IIS_PORT = 80
 
 # ══════════════════════════════════════════════════════════════════════════
-#  TERMINAL UI
+#  GIAO DIỆN TERMINAL
 # ══════════════════════════════════════════════════════════════════════════
 
 _COLOR = sys.stdout.isatty() or bool(os.environ.get("FORCE_COLOR"))
@@ -92,11 +92,11 @@ def bg_green(t):    return _c("42;97", t)
 def bg_red(t):      return _c("41;97", t)
 def bg_yellow(t):   return _c("43;30", t)
 
-def ok(msg):    print(f"  {green('V')} {msg}")
-def warn(msg):  print(f"  {yellow('!')} {msg}")
-def info(msg):  print(f"  {dim('>')} {msg}")
-def fail(msg):  print(f"  {red('X')} {msg}")
-def skip(msg):  print(f"  {dim('-')} {msg}")
+def ok(msg):    print(f"  {green('✓')} {msg}")
+def warn(msg):  print(f"  {yellow('⚠')} {msg}")
+def info(msg):  print(f"  {dim('›')} {msg}")
+def fail(msg):  print(f"  {red('✗')} {msg}")
+def skip(msg):  print(f"  {dim('–')} {msg}")
 
 def step(n, total, msg):
     print(f"\n  {bold(cyan(f'[{n}/{total}]'))} {bold(msg)}")
@@ -104,27 +104,26 @@ def step(n, total, msg):
 def clear():
     os.system("cls" if os.name == "nt" else "clear")
 
-def pause(msg="  Nhan Enter de tiep tuc..."):
+def pause(msg="  Nhấn Enter để tiếp tục..."):
     input(msg)
 
 def confirm(msg, default=False):
-    suffix = " (Y/n): " if default else " (y/N): "
+    suffix = " (C/k): " if default else " (c/K): "
     ans = input(f"  {msg}{suffix}").strip().lower()
     if not ans:
         return default
-    return ans in ("y", "yes")
+    return ans in ("c", "co", "y", "yes")
 
 def banner():
     clear()
     w = 56
     print()
     print(f"  {bg_blue(' ' * w)}")
-    print(f"  {bg_blue('   OpenRAG Deploy Manager' + ' ' * (w - 25))}")
+    print(f"  {bg_blue('   OpenRAG — Trình quản lý triển khai' + ' ' * (w - 38))}")
     print(f"  {bg_blue(' ' * w)}")
     print()
 
 def show_box(title, lines):
-    """In box dep."""
     w = max(len(l) for l in lines) + 4
     w = max(w, len(title) + 4, 50)
     print(f"\n  +{'=' * w}+")
@@ -135,7 +134,7 @@ def show_box(title, lines):
     print(f"  +{'=' * w}+")
 
 # ══════════════════════════════════════════════════════════════════════════
-#  SHELL HELPERS
+#  HÀM HỖ TRỢ
 # ══════════════════════════════════════════════════════════════════════════
 
 def run(cmd, env=None, cwd=None, quiet=False):
@@ -151,10 +150,10 @@ def run(cmd, env=None, cwd=None, quiet=False):
         subprocess.run(cmd, **kw)
         return True
     except subprocess.CalledProcessError as e:
-        fail(f"Exit {e.returncode}: {' '.join(str(c) for c in cmd[:5])}")
+        fail(f"Lỗi (exit {e.returncode}): {' '.join(str(c) for c in cmd[:5])}")
         return False
     except FileNotFoundError:
-        fail(f"Khong tim thay: {cmd[0]}")
+        fail(f"Không tìm thấy: {cmd[0]}")
         return False
 
 def capture(cmd, timeout=15):
@@ -200,7 +199,7 @@ def pip_install(python_exe, args, cache=None):
     return run(cmd)
 
 # ══════════════════════════════════════════════════════════════════════════
-#  GPU DETECTION
+#  PHÁT HIỆN GPU
 # ══════════════════════════════════════════════════════════════════════════
 
 def detect_gpu():
@@ -212,13 +211,13 @@ def detect_gpu():
     smi = next((p for p in smi_candidates if p and Path(p).exists()), None)
     if not smi:
         return {"has_gpu": False, "wheel": "cpu", "torch_idx": "https://download.pytorch.org/whl/cpu",
-                "label": "CPU only", "gpu_name": ""}
+                "label": "Chỉ CPU (không có GPU)", "gpu_name": ""}
 
     output = capture([smi])
     m = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", output or "")
     if not m:
         return {"has_gpu": False, "wheel": "cpu", "torch_idx": "https://download.pytorch.org/whl/cpu",
-                "label": "CPU only", "gpu_name": ""}
+                "label": "Chỉ CPU (không có GPU)", "gpu_name": ""}
 
     major, minor = int(m.group(1)), int(m.group(2))
     cuda_ver = f"{major}.{minor}"
@@ -239,12 +238,12 @@ def detect_gpu():
     }
 
 # ══════════════════════════════════════════════════════════════════════════
-#  PYTHON VERSION MANAGEMENT
+#  QUẢN LÝ PHIÊN BẢN PYTHON
 # ══════════════════════════════════════════════════════════════════════════
 
 def find_compatible_python():
-    """Tim Python 3.10-3.12. Tra ve path hoac None."""
-    # 1) Python 3.12 da cai rieng
+    """Tìm Python 3.10-3.12. Trả về path hoặc None."""
+    # 1) Python 3.12 đã cài riêng
     if PY312_DIR.exists() and (PY312_DIR / "python.exe").exists():
         return str(PY312_DIR / "python.exe")
 
@@ -252,7 +251,7 @@ def find_compatible_python():
     for minor in (12, 11, 10):
         ver = capture(["py", f"-3.{minor}", "--version"])
         if ver:
-            return f"py|-3.{minor}"  # special format, split later
+            return f"py|-3.{minor}"
 
     # 3) python trong PATH
     ver = capture(["python", "--version"])
@@ -266,7 +265,6 @@ def find_compatible_python():
     return None
 
 def get_python_cmd(python_spec):
-    """Chuyen python spec thanh list cmd."""
     if not python_spec:
         return None
     if "|" in python_spec:
@@ -274,18 +272,18 @@ def get_python_cmd(python_spec):
     return [python_spec]
 
 def download_python312():
-    """Tai va cai Python 3.12 vao INSTALL_DIR/python312."""
+    """Tải và cài Python 3.12 vào INSTALL_DIR/python312."""
     installer = Path(tempfile.gettempdir()) / f"python-{PY312_VER}-amd64.exe"
 
     if not installer.exists():
-        info(f"Dang tai Python {PY312_VER}...")
+        info(f"Đang tải Python {PY312_VER}...")
         try:
             urllib.request.urlretrieve(PY312_URL, str(installer))
         except Exception as e:
-            fail(f"Tai Python that bai: {e}")
+            fail(f"Tải Python thất bại: {e}")
             return None
 
-    info(f"Cai dat Python {PY312_VER} vao {PY312_DIR}...")
+    info(f"Cài đặt Python {PY312_VER} vào {PY312_DIR}...")
     PY312_DIR.mkdir(parents=True, exist_ok=True)
     result = subprocess.run([
         str(installer), "/quiet",
@@ -296,88 +294,88 @@ def download_python312():
         "Shortcuts=0", "AssociateFiles=0",
     ])
     if result.returncode != 0:
-        fail("Cai dat Python that bai!")
+        fail("Cài đặt Python thất bại!")
         return None
 
     exe = PY312_DIR / "python.exe"
     if exe.exists():
-        ok(f"Python 3.12 da cai: {exe}")
+        ok(f"Đã cài Python 3.12: {exe}")
         return str(exe)
-    fail("Khong tim thay python.exe sau khi cai!")
+    fail("Không tìm thấy python.exe sau khi cài!")
     return None
 
 def ensure_compatible_python():
-    """Tim hoac tai Python tuong thich. Tra ve path."""
+    """Tìm hoặc tải Python tương thích. Trả về path."""
     py = find_compatible_python()
     if py:
         cmd = get_python_cmd(py)
         ver = capture(cmd + ["--version"])
-        ok(f"Python tuong thich: {ver}")
+        ok(f"Python tương thích: {ver}")
         return py
 
     v = sys.version_info
-    warn(f"Python hien tai: {v.major}.{v.minor}.{v.micro} (can 3.10-3.12)")
-    info("PyTorch chua ho tro Python 3.13+")
+    warn(f"Python hiện tại: {v.major}.{v.minor}.{v.micro} (cần 3.10–3.12)")
+    info("PyTorch chưa hỗ trợ Python 3.13+")
 
-    if confirm("Tu dong tai Python 3.12?", default=True):
+    if confirm("Tự động tải Python 3.12?", default=True):
         return download_python312()
 
-    fail("Khong co Python tuong thich!")
+    fail("Không có Python tương thích!")
     return None
 
 def create_venv(python_spec, venv_path, force=False):
-    """Tao venv tu Python tuong thich."""
+    """Tạo venv từ Python tương thích."""
     venv_python = venv_path / "Scripts" / "python.exe"
 
     if venv_path.exists() and force:
-        info("Xoa venv cu...")
+        info("Xoá venv cũ...")
         shutil.rmtree(venv_path)
 
     if venv_path.exists() and venv_python.exists():
         ver = capture([str(venv_python), "--version"])
-        ok(f"venv da ton tai ({ver})")
+        ok(f"venv đã tồn tại ({ver})")
         return str(venv_python)
 
     cmd = get_python_cmd(python_spec)
     if not cmd:
-        fail("Khong co Python tuong thich!")
+        fail("Không có Python tương thích!")
         return None
 
-    info(f"Tao venv tai {venv_path}...")
+    info(f"Tạo venv tại {venv_path}...")
     result = subprocess.run(cmd + ["-m", "venv", str(venv_path)])
     if result.returncode != 0:
-        fail("Tao venv that bai!")
+        fail("Tạo venv thất bại!")
         return None
 
-    ok("venv da tao")
+    ok("Đã tạo venv")
     return str(venv_python)
 
 # ══════════════════════════════════════════════════════════════════════════
-#  CHECK SYSTEM
+#  KIỂM TRA HỆ THỐNG
 # ══════════════════════════════════════════════════════════════════════════
 
 def check_system():
-    """Kiem tra toan bo he thong."""
+    """Kiểm tra toàn bộ hệ thống."""
     banner()
-    print(f"  {bold('Kiem tra cau hinh may')}\n")
+    print(f"  {bold('Kiểm tra cấu hình máy')}\n")
 
     # Python
     v = sys.version_info
-    print(f"  Python hien tai:  {v.major}.{v.minor}.{v.micro}")
+    print(f"  Python hiện tại:  {v.major}.{v.minor}.{v.micro}")
     py = find_compatible_python()
     if py:
         cmd = get_python_cmd(py)
         ver = capture(cmd + ["--version"])
-        ok(f"Python tuong thich: {ver}")
+        ok(f"Python tương thích: {ver}")
     else:
-        warn(f"Khong co Python 3.10-3.12 (se tu tai khi deploy)")
+        warn("Không có Python 3.10–3.12 (sẽ tự tải khi triển khai)")
 
     # .NET
     dotnet = capture(["dotnet", "--version"])
     if dotnet:
         ok(f".NET SDK: {dotnet}")
     else:
-        warn(".NET SDK chua cai")
+        warn(".NET SDK chưa cài")
 
     # Node.js
     node = capture(["node", "--version"])
@@ -385,19 +383,19 @@ def check_system():
     if node:
         ok(f"Node.js: {node}  /  npm: {npm}")
     else:
-        warn("Node.js chua cai")
+        warn("Node.js chưa cài")
 
     # GPU
     gpu = detect_gpu()
     if gpu["has_gpu"]:
         ok(f"GPU: {gpu['label']}")
     else:
-        info("GPU: Khong co (se dung CPU)")
+        info("GPU: Không có (sẽ dùng CPU)")
 
     # Disk
     free_gb = shutil.disk_usage(ROOT).free / 1e9
     fn = ok if free_gb >= 8 else warn
-    fn(f"Dia: {free_gb:.1f} GB trong (can ~8 GB)")
+    fn(f"Ổ đĩa: {free_gb:.1f} GB trống (cần ~8 GB)")
 
     # RAM
     try:
@@ -414,49 +412,49 @@ def check_system():
 
     # Admin
     if is_admin():
-        ok("Quyen Administrator: Co")
+        ok("Quyền Administrator: Có")
     else:
-        info("Quyen Administrator: Khong (can cho cai service/IIS)")
+        info("Quyền Administrator: Không (cần cho dịch vụ/IIS)")
 
     # Network
     try:
         urllib.request.urlopen("https://pypi.org", timeout=5)
-        ok("Ket noi mang: OK")
+        ok("Kết nối mạng: OK")
     except Exception:
-        warn("Khong co internet")
+        warn("Không có internet")
 
     # NSSM
     if NSSM_EXE.exists():
         ok(f"NSSM: {NSSM_EXE}")
     else:
-        info("NSSM: Chua cai (can cho Windows Services)")
+        info("NSSM: Chưa cài (cần cho Windows Services)")
 
     print()
     pause()
 
 # ══════════════════════════════════════════════════════════════════════════
-#  DEV SETUP
+#  CÀI ĐẶT DEV
 # ══════════════════════════════════════════════════════════════════════════
 
 def cmd_dev_setup(skip_model=False, force=False):
-    """Setup moi truong dev: venv + packages + models."""
+    """Cài đặt môi trường dev: venv + packages + models."""
     banner()
-    print(f"  {bold('Dev Setup')}\n")
+    print(f"  {bold('Cài đặt môi trường phát triển')}\n")
 
     total = 7
     n = 0
     def s(msg): nonlocal n; n += 1; step(n, total, msg)
 
-    s("Kiem tra he thong")
+    s("Kiểm tra hệ thống")
     gpu = detect_gpu()
     info(f"GPU: {gpu['label']}")
 
-    s("Tim Python tuong thich")
+    s("Tìm Python tương thích")
     py = ensure_compatible_python()
     if not py:
         return
 
-    s("Tao virtual environment")
+    s("Tạo môi trường ảo (venv)")
     for d in [PIP_CACHE, HF_CACHE, NPM_CACHE]:
         d.mkdir(parents=True, exist_ok=True)
 
@@ -465,16 +463,15 @@ def cmd_dev_setup(skip_model=False, force=False):
     if not venv_python:
         return
 
-    s(f"Cai PyTorch [{gpu['wheel']}]")
-    # Check existing
+    s(f"Cài PyTorch [{gpu['wheel']}]")
     existing = capture([venv_python, "-c", "import torch; print(torch.__version__)"])
     if existing and not force:
-        ok(f"PyTorch {existing} (da co)")
+        ok(f"PyTorch {existing} (đã có)")
     else:
         pip_install(venv_python, ["install", "--upgrade", "pip", "--quiet"], PIP_CACHE)
         pip_install(venv_python, ["install", "torch", "--index-url", gpu["torch_idx"]], PIP_CACHE)
 
-    s("Cai Python packages (ml_service)")
+    s("Cài gói Python (ml_service)")
     req = ML_SERVICE / "requirements.txt"
     if req.exists():
         pkgs = []
@@ -489,7 +486,7 @@ def cmd_dev_setup(skip_model=False, force=False):
         if pkgs:
             pip_install(venv_python, ["install"] + pkgs, PIP_CACHE)
 
-    s(".NET restore + npm install")
+    s("Khôi phục .NET + npm")
     dotnet_ok = bool(capture(["dotnet", "--version"]))
     node_ok = bool(capture(["node", "--version"]))
     if dotnet_ok and DOTNET_API.exists():
@@ -497,36 +494,34 @@ def cmd_dev_setup(skip_model=False, force=False):
     if node_ok and FRONTEND.exists():
         run(["npm", "install", "--prefer-offline"], env={"npm_config_cache": str(NPM_CACHE)}, cwd=FRONTEND)
 
-    s("Tai AI models")
+    s("Tải mô hình AI")
     if skip_model:
         skip("--skip-model")
     else:
         env = {"HF_HOME": str(HF_CACHE)}
-        # Embedding
         slug = EMBEDDING_MODEL.replace("/", "--")
         if (HF_CACHE / "hub").exists() and any((HF_CACHE / "hub").glob(f"models--{slug}")):
-            ok(f"Embedding model da co ({EMBEDDING_MODEL})")
+            ok(f"Mô hình nhúng đã có ({EMBEDDING_MODEL})")
         else:
-            info(f"Tai {EMBEDDING_MODEL} (~2.3 GB)...")
+            info(f"Đang tải {EMBEDDING_MODEL} (~2.3 GB)...")
             run([venv_python, "-c",
                  f"import os; os.environ['HF_HOME']={str(HF_CACHE)!r}; "
                  f"from sentence_transformers import SentenceTransformer; "
                  f"m=SentenceTransformer({EMBEDDING_MODEL!r}); "
                  f"print('dim:', m.get_sentence_embedding_dimension())"], env=env)
 
-        # Reranker
         slug2 = RERANKER_MODEL.replace("/", "--")
         if (HF_CACHE / "hub").exists() and any((HF_CACHE / "hub").glob(f"models--{slug2}")):
-            ok(f"Reranker model da co ({RERANKER_MODEL})")
+            ok(f"Mô hình reranker đã có ({RERANKER_MODEL})")
         else:
-            info(f"Tai {RERANKER_MODEL} (~560 MB)...")
+            info(f"Đang tải {RERANKER_MODEL} (~560 MB)...")
             run([venv_python, "-c",
                  f"import os; os.environ['HF_HOME']={str(HF_CACHE)!r}; "
                  f"from FlagEmbedding import FlagReranker; "
                  f"r=FlagReranker({RERANKER_MODEL!r}, use_fp16=False); "
                  f"print('ok')"], env=env)
 
-    print(f"\n  {green('V')} {bold('Dev setup hoan tat!')}\n")
+    print(f"\n  {green('✓')} {bold('Cài đặt dev hoàn tất!')}\n")
     pause()
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -536,49 +531,44 @@ def cmd_dev_setup(skip_model=False, force=False):
 def cmd_build():
     """Build frontend + publish .NET API."""
     banner()
-    print(f"  {bold('Production Build')}\n")
+    print(f"  {bold('Build phiên bản chính thức')}\n")
 
     total = 3
     n = 0
     def s(msg): nonlocal n; n += 1; step(n, total, msg)
 
-    s("Build Frontend (Vue -> wwwroot)")
+    s("Build giao diện (Vue → wwwroot)")
     if not FRONTEND.exists():
-        fail("Thu muc frontend/ khong ton tai!")
+        fail("Thư mục frontend/ không tồn tại!")
         return False
     if not run(["npm", "install", "--prefer-offline"], cwd=FRONTEND):
         return False
     if not run(["npm", "run", "build"], cwd=FRONTEND):
         return False
-    ok("Frontend -> OpenRAG.Api/wwwroot")
+    ok("Giao diện → OpenRAG.Api/wwwroot")
 
-    s("Publish .NET API")
+    s("Xuất bản .NET API")
     api_publish = PUBLISH / "api"
     if not run(["dotnet", "publish", "-c", "Release", "-o", str(api_publish), "--self-contained", "false"],
                cwd=DOTNET_API):
         return False
-    ok(f"API -> {api_publish}")
+    ok(f"API → {api_publish}")
 
-    s("Copy ML Service")
+    s("Sao chép dịch vụ ML")
     ml_publish = PUBLISH / "ml_service"
     ml_publish.mkdir(parents=True, exist_ok=True)
     (ml_publish / "rag").mkdir(exist_ok=True)
 
-    # Copy Python files
     for f in ML_SERVICE.glob("*.py"):
         shutil.copy2(f, ml_publish)
-    # Copy rag/
     if (ML_SERVICE / "rag").exists():
         shutil.copytree(ML_SERVICE / "rag", ml_publish / "rag", dirs_exist_ok=True)
-    # Copy requirements.txt
     shutil.copy2(ML_SERVICE / "requirements.txt", ml_publish)
-    # Copy .env
     env_file = ROOT / ".env"
     if env_file.exists():
         shutil.copy2(env_file, ml_publish)
         shutil.copy2(env_file, api_publish)
 
-    # Data dir
     data_pub = PUBLISH / "data"
     data_pub.mkdir(exist_ok=True)
     for d in ["chroma", "uploads", "bm25"]:
@@ -586,53 +576,53 @@ def cmd_build():
     db = ROOT / "data" / "openrag.db"
     if db.exists():
         shutil.copy2(db, data_pub)
-        ok("Database copied")
+        ok("Đã sao chép CSDL")
 
-    ok("ML service files copied")
+    ok("Đã sao chép dịch vụ ML")
 
-    show_box("Build hoan tat!", [
-        f"publish/api/           .NET API + wwwroot",
-        f"publish/ml_service/    Python ML service",
-        f"publish/data/          SQLite + ChromaDB",
+    show_box("Build hoàn tất!", [
+        "publish/api/           .NET API + giao diện",
+        "publish/ml_service/    Dịch vụ ML Python",
+        "publish/data/          SQLite + ChromaDB",
         "",
-        "Tiep theo: Copy 'publish/' len server",
-        "           va chay menu [4] Server Deploy",
+        "Bước tiếp: Sao chép 'publish/' lên máy chủ",
+        "           rồi chạy mục [4] Triển khai",
     ])
     print()
     pause()
     return True
 
 # ══════════════════════════════════════════════════════════════════════════
-#  SERVER DEPLOY
+#  TRIỂN KHAI LÊN MÁY CHỦ
 # ══════════════════════════════════════════════════════════════════════════
 
 def cmd_server_deploy():
-    """Deploy tren server: tao venv, cai packages, cau hinh."""
+    """Triển khai trên server: tạo venv, cài packages, cấu hình."""
     banner()
-    print(f"  {bold('Server Deploy')}\n")
+    print(f"  {bold('Triển khai lên máy chủ')}\n")
 
     if not is_admin():
-        warn("Nen chay voi quyen Administrator!")
-        if not confirm("Van tiep tuc?"):
+        warn("Nên chạy với quyền Administrator!")
+        if not confirm("Vẫn tiếp tục?"):
             return
 
     total = 6
     n = 0
     def s(msg): nonlocal n; n += 1; step(n, total, msg)
 
-    s("Tao thu muc")
+    s("Tạo thư mục")
     for d in [INSTALL_DIR, INSTALL_DIR / "data", INSTALL_DIR / "data" / "chroma",
               INSTALL_DIR / "data" / "uploads", INSTALL_DIR / "data" / "bm25",
               INSTALL_DIR / "logs"]:
         d.mkdir(parents=True, exist_ok=True)
-    ok(f"Thu muc: {INSTALL_DIR}")
+    ok(f"Thư mục: {INSTALL_DIR}")
 
-    s("Tim Python tuong thich (3.10-3.12)")
+    s("Tìm Python tương thích (3.10–3.12)")
     py = ensure_compatible_python()
     if not py:
         return
 
-    s("Tao venv + cai packages")
+    s("Tạo venv + cài gói")
     ml_dir = INSTALL_DIR / "ml_service"
     venv_path = ml_dir / ".venv"
     venv_python = create_venv(py, venv_path)
@@ -643,12 +633,12 @@ def cmd_server_deploy():
     info(f"GPU: {gpu['label']}")
 
     pip_install(venv_python, ["install", "--upgrade", "pip", "--quiet"], PIP_CACHE)
-    info(f"Cai PyTorch [{gpu['wheel']}]...")
+    info(f"Đang cài PyTorch [{gpu['wheel']}]...")
     pip_install(venv_python, ["install", "torch", "--index-url", gpu["torch_idx"]], PIP_CACHE)
 
     req = ml_dir / "requirements.txt"
     if req.exists():
-        info("Cai ML packages...")
+        info("Đang cài gói ML...")
         pkgs = []
         for line in req.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -660,9 +650,9 @@ def cmd_server_deploy():
             pkgs.append(line)
         if pkgs:
             pip_install(venv_python, ["install"] + pkgs, PIP_CACHE)
-    ok("Python packages installed")
+    ok("Đã cài xong gói Python")
 
-    s("Tao .env production")
+    s("Tạo .env cho máy chủ")
     env_file = INSTALL_DIR / ".env"
     if not env_file.exists():
         env_file.write_text(
@@ -676,12 +666,12 @@ def cmd_server_deploy():
             "BM25_WRITER_HEAP_SIZE=50000000\n",
             encoding="utf-8",
         )
-        ok(".env created")
+        ok("Đã tạo .env")
     else:
-        ok(".env da ton tai")
+        ok(".env đã tồn tại")
     shutil.copy2(env_file, ml_dir / ".env")
 
-    s("Cau hinh .NET API")
+    s("Cấu hình .NET API")
     api_dir = INSTALL_DIR / "api"
     prod_config = api_dir / "appsettings.Production.json"
     if api_dir.exists() and not prod_config.exists():
@@ -691,14 +681,14 @@ def cmd_server_deploy():
             "Urls": "http://127.0.0.1:8000",
             "Logging": {"LogLevel": {"Default": "Warning", "Microsoft.AspNetCore": "Warning"}},
         }, indent=2, ensure_ascii=False), encoding="utf-8")
-        ok("appsettings.Production.json created")
+        ok("Đã tạo appsettings.Production.json")
     elif api_dir.exists():
-        ok("appsettings.Production.json da ton tai")
+        ok("appsettings.Production.json đã tồn tại")
     else:
-        warn(f"{api_dir} chua co - copy publish/api/ vao truoc")
+        warn(f"{api_dir} chưa có — sao chép publish/api/ vào trước")
 
-    s("Tai AI models")
-    info("Tai embedding model (lan dau mat vai phut)...")
+    s("Tải mô hình AI")
+    info("Đang tải mô hình nhúng (lần đầu mất vài phút)...")
     result = subprocess.run(
         [venv_python, "-c",
          "from sentence_transformers import SentenceTransformer; "
@@ -707,29 +697,29 @@ def cmd_server_deploy():
         env={**os.environ, "HF_HOME": str(HF_CACHE)},
     )
     if result.returncode == 0:
-        ok("Embedding model ready")
+        ok("Mô hình nhúng sẵn sàng")
     else:
-        warn("Tai model that bai - co the thu lai sau")
+        warn("Tải mô hình thất bại — có thể thử lại sau")
 
-    print(f"\n  {green('V')} {bold('Server deploy hoan tat!')}\n")
+    print(f"\n  {green('✓')} {bold('Triển khai hoàn tất!')}\n")
     pause()
 
 # ══════════════════════════════════════════════════════════════════════════
-#  NSSM / WINDOWS SERVICES
+#  NSSM / DỊCH VỤ WINDOWS
 # ══════════════════════════════════════════════════════════════════════════
 
 def download_nssm():
-    """Tai va giai nen NSSM."""
+    """Tải và giải nén NSSM."""
     nssm_dir = INSTALL_DIR / "nssm"
     nssm_dir.mkdir(parents=True, exist_ok=True)
 
     zip_path = Path(tempfile.gettempdir()) / "nssm-2.24.zip"
     if not zip_path.exists():
-        info("Dang tai NSSM...")
+        info("Đang tải NSSM...")
         try:
             urllib.request.urlretrieve(NSSM_URL, str(zip_path))
         except Exception as e:
-            fail(f"Tai NSSM that bai: {e}")
+            fail(f"Tải NSSM thất bại: {e}")
             return False
 
     with zipfile.ZipFile(str(zip_path), "r") as zf:
@@ -737,10 +727,10 @@ def download_nssm():
             if member.endswith("win64/nssm.exe"):
                 data = zf.read(member)
                 (nssm_dir / "nssm.exe").write_bytes(data)
-                ok(f"NSSM da giai nen vao {nssm_dir}")
+                ok(f"Đã giải nén NSSM vào {nssm_dir}")
                 return True
 
-    fail("Khong tim thay nssm.exe trong file zip!")
+    fail("Không tìm thấy nssm.exe trong file zip!")
     return False
 
 def nssm(args):
@@ -748,24 +738,23 @@ def nssm(args):
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 def cmd_install_services():
-    """Cai dat Windows Services."""
+    """Cài đặt dịch vụ Windows."""
     banner()
-    print(f"  {bold('Cai dat Windows Services')}\n")
+    print(f"  {bold('Cài đặt dịch vụ Windows')}\n")
 
     if not is_admin():
-        fail("Can quyen Administrator! Right-click > Run as administrator")
+        fail("Cần quyền Administrator! Chuột phải → Chạy với tư cách quản trị viên")
         pause()
         return
 
-    # Check NSSM
     if not NSSM_EXE.exists():
-        warn("NSSM chua co")
-        if confirm("Tu dong tai NSSM?", default=True):
+        warn("NSSM chưa có")
+        if confirm("Tự động tải NSSM?", default=True):
             if not download_nssm():
                 pause()
                 return
         else:
-            fail("Can NSSM de cai Windows Services")
+            fail("Cần NSSM để cài dịch vụ Windows")
             pause()
             return
 
@@ -773,12 +762,12 @@ def cmd_install_services():
     api_exe = INSTALL_DIR / "api" / "OpenRAG.Api.exe"
 
     if not venv_python.exists():
-        fail(f"Chua co venv: {venv_python}")
-        info("Chay menu [4] Server Deploy truoc")
+        fail(f"Chưa có venv: {venv_python}")
+        info("Chạy mục [4] Triển khai trước")
         pause()
         return
 
-    # -- ML Service --
+    # -- Dịch vụ ML --
     step(1, 2, "OpenRAG-ML (Python FastAPI)")
     nssm(["stop", "OpenRAG-ML"])
     nssm(["remove", "OpenRAG-ML", "confirm"])
@@ -790,7 +779,7 @@ def cmd_install_services():
           f"DOTENV_PATH={INSTALL_DIR}\\.env", f"HF_HOME={HF_CACHE}"])
     nssm(["set", "OpenRAG-ML", "DisplayName", "OpenRAG ML Service"])
     nssm(["set", "OpenRAG-ML", "Description",
-          "Python FastAPI ML service (embeddings, search, reranker)"])
+          "Dịch vụ ML Python FastAPI (nhúng văn bản, tìm kiếm, xếp hạng lại)"])
     nssm(["set", "OpenRAG-ML", "Start", "SERVICE_AUTO_START"])
     nssm(["set", "OpenRAG-ML", "AppStdout", str(INSTALL_DIR / "logs" / "ml-stdout.log")])
     nssm(["set", "OpenRAG-ML", "AppStderr", str(INSTALL_DIR / "logs" / "ml-stderr.log")])
@@ -802,9 +791,9 @@ def cmd_install_services():
     nssm(["set", "OpenRAG-ML", "AppStopMethodConsole", "5000"])
     nssm(["set", "OpenRAG-ML", "AppStopMethodWindow", "5000"])
     nssm(["set", "OpenRAG-ML", "AppStopMethodThreads", "5000"])
-    ok("OpenRAG-ML installed")
+    ok("Đã cài OpenRAG-ML")
 
-    # -- API Service --
+    # -- Dịch vụ API --
     step(2, 2, "OpenRAG-API (.NET Core)")
     nssm(["stop", "OpenRAG-API"])
     nssm(["remove", "OpenRAG-API", "confirm"])
@@ -812,7 +801,7 @@ def cmd_install_services():
     if api_exe.exists():
         nssm(["install", "OpenRAG-API", str(api_exe)])
     else:
-        warn(f"{api_exe} chua co - dung dotnet thay the")
+        warn(f"{api_exe} chưa có — dùng dotnet thay thế")
         dotnet = shutil.which("dotnet") or "dotnet"
         nssm(["install", "OpenRAG-API", dotnet])
         nssm(["set", "OpenRAG-API", "AppParameters",
@@ -823,7 +812,7 @@ def cmd_install_services():
           "ASPNETCORE_ENVIRONMENT=Production",
           "ASPNETCORE_URLS=http://127.0.0.1:8000"])
     nssm(["set", "OpenRAG-API", "DisplayName", "OpenRAG API Service"])
-    nssm(["set", "OpenRAG-API", "Description", "ASP.NET Core API for OpenRAG"])
+    nssm(["set", "OpenRAG-API", "Description", "Dịch vụ API ASP.NET Core cho OpenRAG"])
     nssm(["set", "OpenRAG-API", "Start", "SERVICE_AUTO_START"])
     nssm(["set", "OpenRAG-API", "DependOnService", "OpenRAG-ML"])
     nssm(["set", "OpenRAG-API", "AppStdout", str(INSTALL_DIR / "logs" / "api-stdout.log")])
@@ -832,16 +821,15 @@ def cmd_install_services():
     nssm(["set", "OpenRAG-API", "AppStderrCreationDisposition", "4"])
     nssm(["set", "OpenRAG-API", "AppRotateFiles", "1"])
     nssm(["set", "OpenRAG-API", "AppRotateBytes", "10485760"])
-    ok("OpenRAG-API installed")
+    ok("Đã cài OpenRAG-API")
 
-    # Start
     print()
-    if confirm("Khoi dong services ngay?", default=True):
-        info("Khoi dong OpenRAG-ML...")
+    if confirm("Khởi động dịch vụ ngay?", default=True):
+        info("Đang khởi động OpenRAG-ML...")
         nssm(["start", "OpenRAG-ML"])
-        info("Doi 10s de ML service san sang...")
+        info("Đợi 10 giây để ML sẵn sàng...")
         time.sleep(10)
-        info("Khoi dong OpenRAG-API...")
+        info("Đang khởi động OpenRAG-API...")
         nssm(["start", "OpenRAG-API"])
         print()
         _show_services_status()
@@ -849,94 +837,88 @@ def cmd_install_services():
     pause()
 
 def cmd_uninstall_services():
-    """Go cai dat Windows Services."""
+    """Gỡ cài đặt dịch vụ Windows."""
     banner()
-    print(f"  {bold('Go cai dat Windows Services')}\n")
+    print(f"  {bold('Gỡ cài đặt dịch vụ Windows')}\n")
 
     if not is_admin():
-        fail("Can quyen Administrator!")
+        fail("Cần quyền Administrator!")
         pause()
         return
 
     if not NSSM_EXE.exists():
-        fail("NSSM khong co")
+        fail("NSSM không có")
         pause()
         return
 
-    if not confirm("Xac nhan go cai dat OpenRAG services?"):
+    if not confirm("Xác nhận gỡ cài đặt dịch vụ OpenRAG?"):
         return
 
     nssm(["stop", "OpenRAG-API"])
     nssm(["stop", "OpenRAG-ML"])
     nssm(["remove", "OpenRAG-API", "confirm"])
     nssm(["remove", "OpenRAG-ML", "confirm"])
-    ok("Services da go cai dat")
+    ok("Đã gỡ cài đặt dịch vụ")
     pause()
 
 # ══════════════════════════════════════════════════════════════════════════
-#  SERVICE STATUS & MANAGEMENT
+#  TRẠNG THÁI DỊCH VỤ
 # ══════════════════════════════════════════════════════════════════════════
 
 def _show_services_status():
-    """Hien thi trang thai services."""
+    """Hiển thị trạng thái dịch vụ."""
     services = [
         ("OpenRAG-ML",  ML_PORT,  "Python FastAPI"),
         ("OpenRAG-API", API_PORT, ".NET Core API"),
     ]
 
-    print(f"\n  {'Service':<16} {'Port':<8} {'Status':<12} {'Health':<8}")
+    print(f"\n  {'Dịch vụ':<16} {'Cổng':<8} {'Trạng thái':<12} {'Sức khoẻ':<8}")
     print(f"  {'-'*16} {'-'*8} {'-'*12} {'-'*8}")
 
     for name, port, desc in services:
-        # Service status
         if NSSM_EXE.exists():
             r = nssm(["status", name])
-            status = r.stdout.strip() if r.returncode == 0 else "NOT FOUND"
+            status = r.stdout.strip() if r.returncode == 0 else "KHÔNG CÓ"
         else:
             r = subprocess.run(["sc", "query", name], capture_output=True, text=True)
             if r.returncode != 0:
-                status = "NOT FOUND"
+                status = "KHÔNG CÓ"
             else:
                 m = re.search(r"STATE\s+:\s+\d+\s+(\w+)", r.stdout)
-                status = m.group(1) if m else "UNKNOWN"
+                status = m.group(1) if m else "KHÔNG RÕ"
 
-        # Color
         if "RUNNING" in status:
-            status_str = green("RUNNING")
+            status_str = green("ĐANG CHẠY")
         elif "STOPPED" in status:
-            status_str = yellow("STOPPED")
-        elif "NOT" in status:
+            status_str = yellow("ĐÃ DỪNG")
+        elif "KHÔNG" in status or "NOT" in status:
             status_str = dim("N/A")
         else:
             status_str = red(status)
 
-        # Health check
-        health = ""
         if is_port_open(port):
             health = green("OK")
         elif "RUNNING" in status:
-            health = yellow("WAIT")
+            health = yellow("CHỜ")
         else:
-            health = dim("-")
+            health = dim("–")
 
         print(f"  {name:<16} {port:<8} {status_str:<24} {health}")
 
-    # IIS
-    iis_status = green("LISTENING") if is_port_open(IIS_PORT) else dim("N/A")
+    iis_status = green("ĐANG NGHE") if is_port_open(IIS_PORT) else dim("N/A")
     print(f"  {'IIS':<16} {IIS_PORT:<8} {iis_status}")
 
     print()
 
 def cmd_status():
-    """Xem trang thai services."""
+    """Xem trạng thái dịch vụ."""
     banner()
-    print(f"  {bold('Trang thai Services')}")
+    print(f"  {bold('Trạng thái dịch vụ')}")
     _show_services_status()
 
-    # Logs
     log_dir = INSTALL_DIR / "logs"
     if log_dir.exists():
-        print(f"  Logs: {log_dir}")
+        print(f"  Nhật ký: {log_dir}")
         for f in sorted(log_dir.glob("*.log")):
             size = f.stat().st_size
             if size > 1024*1024:
@@ -950,31 +932,31 @@ def cmd_status():
     pause()
 
 def cmd_restart_services():
-    """Restart services."""
+    """Khởi động lại dịch vụ."""
     banner()
-    print(f"  {bold('Restart Services')}\n")
+    print(f"  {bold('Khởi động lại dịch vụ')}\n")
 
     if not NSSM_EXE.exists():
-        fail("NSSM khong co")
+        fail("NSSM không có")
         pause()
         return
 
     if not is_admin():
-        fail("Can quyen Administrator!")
+        fail("Cần quyền Administrator!")
         pause()
         return
 
-    info("Dung services...")
+    info("Đang dừng dịch vụ...")
     nssm(["stop", "OpenRAG-API"])
     nssm(["stop", "OpenRAG-ML"])
     time.sleep(2)
 
-    info("Khoi dong OpenRAG-ML...")
+    info("Đang khởi động OpenRAG-ML...")
     nssm(["start", "OpenRAG-ML"])
-    info("Doi 10s...")
+    info("Đợi 10 giây...")
     time.sleep(10)
 
-    info("Khoi dong OpenRAG-API...")
+    info("Đang khởi động OpenRAG-API...")
     nssm(["start", "OpenRAG-API"])
     time.sleep(2)
 
@@ -982,25 +964,25 @@ def cmd_restart_services():
     pause()
 
 # ══════════════════════════════════════════════════════════════════════════
-#  IIS SETUP
+#  CẤU HÌNH IIS
 # ══════════════════════════════════════════════════════════════════════════
 
 def cmd_iis_setup():
-    """Cau hinh IIS reverse proxy."""
+    """Cấu hình IIS reverse proxy."""
     banner()
-    print(f"  {bold('Cau hinh IIS Reverse Proxy')}\n")
+    print(f"  {bold('Cấu hình IIS Reverse Proxy')}\n")
 
     if not is_admin():
-        fail("Can quyen Administrator!")
+        fail("Cần quyền Administrator!")
         pause()
         return
 
-    step(1, 3, "Kiem tra IIS modules")
+    step(1, 3, "Kiểm tra module IIS")
 
     arr_dll = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "inetsrv" / "requestRouter.dll"
     if not arr_dll.exists():
         print()
-        warn("Can cai thu cong 2 module IIS:")
+        warn("Cần cài thủ công 2 module IIS:")
         print()
         print(f"  1) {bold('URL Rewrite 2.1')}")
         print(f"     https://www.iis.net/downloads/microsoft/url-rewrite")
@@ -1008,19 +990,18 @@ def cmd_iis_setup():
         print(f"  2) {bold('Application Request Routing (ARR) 3.0')}")
         print(f"     https://www.iis.net/downloads/microsoft/application-request-routing")
         print()
-        if not confirm("Da cai dat xong?"):
+        if not confirm("Đã cài đặt xong?"):
             return
-    ok("IIS modules")
+    ok("Module IIS đã có")
 
-    # Enable ARR
     appcmd = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "inetsrv" / "appcmd.exe"
     if appcmd.exists():
         subprocess.run([str(appcmd), "set", "config",
                         "-section:system.webServer/proxy", "/enabled:True",
                         "/commit:apphost"], capture_output=True)
-        ok("ARR proxy enabled")
+        ok("Đã bật ARR proxy")
 
-    step(2, 3, "Tao web.config")
+    step(2, 3, "Tạo web.config")
     site_dir = INSTALL_DIR / "iis-site"
     site_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1074,10 +1055,9 @@ def cmd_iis_setup():
     </configuration>
     """)
     (site_dir / "web.config").write_text(web_config, encoding="utf-8")
-    ok(f"web.config -> {site_dir}")
+    ok(f"web.config → {site_dir}")
 
-    step(3, 3, "Tao IIS Site")
-    # Use PowerShell to create site
+    step(3, 3, "Tạo IIS Site")
     ps_script = textwrap.dedent(f"""\
         Import-Module WebAdministration -ErrorAction SilentlyContinue
         if (Test-Path 'IIS:\\Sites\\OpenRAG' -ErrorAction SilentlyContinue) {{
@@ -1091,30 +1071,30 @@ def cmd_iis_setup():
     r = subprocess.run(["powershell", "-Command", ps_script],
                        capture_output=True, text=True)
     if r.returncode == 0:
-        ok(f"IIS site 'OpenRAG' tren port {IIS_PORT}")
+        ok(f"Đã tạo IIS site 'OpenRAG' trên cổng {IIS_PORT}")
     else:
-        fail(f"Loi tao IIS site: {r.stderr.strip()}")
+        fail(f"Lỗi tạo IIS site: {r.stderr.strip()}")
 
     print()
-    show_box("IIS Setup hoan tat!", [
-        f"Site:     OpenRAG (port {IIS_PORT})",
+    show_box("Cấu hình IIS hoàn tất!", [
+        f"Site:     OpenRAG (cổng {IIS_PORT})",
         f"Backend:  {backend}",
-        f"Dir:      {site_dir}",
+        f"Thư mục:  {site_dir}",
         "",
-        "Truy cap: http://localhost",
-        "          http://<server-ip>",
+        "Truy cập: http://localhost",
+        "          http://<địa-chỉ-IP-server>",
     ])
     print()
     pause()
 
 # ══════════════════════════════════════════════════════════════════════════
-#  DEV SERVICE MANAGER (khoi dong thu cong)
+#  CHẾ ĐỘ PHÁT TRIỂN
 # ══════════════════════════════════════════════════════════════════════════
 
 def cmd_dev_start():
-    """Khoi dong services (dev mode, mo cua so cmd)."""
+    """Khởi động dịch vụ (chế độ dev, mở cửa sổ cmd)."""
     banner()
-    print(f"  {bold('Dev Mode - Khoi dong Services')}\n")
+    print(f"  {bold('Chế độ phát triển — Khởi động')}\n")
 
     venv_activate = ROOT / ".venv" / "Scripts" / "activate.bat"
 
@@ -1123,66 +1103,66 @@ def cmd_dev_start():
          f'call "{venv_activate}" && python main_ml.py' if venv_activate.exists()
          else "python main_ml.py"),
         ("API", API_PORT, DOTNET_API, "dotnet run"),
-        ("Frontend", 5173, FRONTEND, "npm run dev"),
+        ("Giao diện", 5173, FRONTEND, "npm run dev"),
     ]:
         if is_port_open(port):
-            ok(f"{name} da chay tren port {port}")
+            ok(f"{name} đã chạy trên cổng {port}")
             continue
         if not directory.exists():
-            warn(f"{name}: thu muc {directory} khong ton tai")
+            warn(f"{name}: thư mục {directory} không tồn tại")
             continue
         subprocess.Popen(
             f'start "{name}" /D "{directory}" cmd /k "{cmd_str}"',
             shell=True,
         )
-        info(f"{name} dang khoi dong tren port {port}...")
+        info(f"{name} đang khởi động trên cổng {port}...")
         time.sleep(1)
 
     print()
     pause()
 
 def cmd_dev_stop():
-    """Dung tat ca services dev."""
+    """Dừng tất cả dịch vụ dev."""
     banner()
-    print(f"  {bold('Dung tat ca Services')}\n")
+    print(f"  {bold('Dừng tất cả dịch vụ')}\n")
 
-    for name, port in [("API", API_PORT), ("ML", ML_PORT), ("Frontend", 5173)]:
+    for name, port in [("API", API_PORT), ("ML", ML_PORT), ("Giao diện", 5173)]:
         pids = get_pids_on_port(port)
         if not pids:
-            info(f"{name}: khong chay")
+            info(f"{name}: không chạy")
             continue
         for pid in pids:
             try:
                 subprocess.run(f"taskkill /F /PID {pid}", shell=True,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                ok(f"Killed {name} PID {pid}")
+                ok(f"Đã dừng {name} PID {pid}")
             except Exception:
-                fail(f"Khong the kill PID {pid}")
+                fail(f"Không thể dừng PID {pid}")
     print()
     pause()
 
 # ══════════════════════════════════════════════════════════════════════════
-#  VIEW LOGS
+#  XEM NHẬT KÝ
 # ══════════════════════════════════════════════════════════════════════════
 
 def cmd_view_logs():
-    """Xem logs."""
+    """Xem nhật ký."""
     banner()
-    print(f"  {bold('Xem Logs')}\n")
+    print(f"  {bold('Xem nhật ký')}\n")
 
     log_dir = INSTALL_DIR / "logs"
     if not log_dir.exists():
-        warn("Thu muc logs chua ton tai")
+        warn("Thư mục nhật ký chưa tồn tại")
         pause()
         return
 
     log_files = sorted(log_dir.glob("*.log"))
     if not log_files:
-        info("Khong co file log nao")
+        info("Không có file nhật ký nào")
         pause()
         return
 
-    print("  Chon file log:\n")
+    print("  Chọn file nhật ký:\n")
     for i, f in enumerate(log_files, 1):
         size = f.stat().st_size
         if size > 1024*1024:
@@ -1192,10 +1172,10 @@ def cmd_view_logs():
         else:
             s = f"{size} B"
         print(f"    [{i}] {f.name:<30} {s}")
-    print(f"    [0] Quay lai")
+    print(f"    [0] Quay lại")
     print()
 
-    choice = input("  Chon: ").strip()
+    choice = input("  Chọn: ").strip()
     if not choice or choice == "0":
         return
 
@@ -1205,20 +1185,19 @@ def cmd_view_logs():
     except (ValueError, IndexError):
         return
 
-    # Show last 50 lines
-    print(f"\n  === {log_file.name} (50 dong cuoi) ===\n")
+    print(f"\n  === {log_file.name} (50 dòng cuối) ===\n")
     try:
         lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
         for line in lines[-50:]:
             print(f"  {line}")
     except Exception as e:
-        fail(f"Khong doc duoc: {e}")
+        fail(f"Không đọc được: {e}")
 
     print()
     pause()
 
 # ══════════════════════════════════════════════════════════════════════════
-#  MAIN MENU
+#  MENU CHÍNH
 # ══════════════════════════════════════════════════════════════════════════
 
 def main_menu():
@@ -1228,32 +1207,32 @@ def main_menu():
         admin_tag = green(" [Admin]") if is_admin() else ""
         py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
 
-        print(f"  Python: {py_ver}   Root: {ROOT}{admin_tag}")
+        print(f"  Python: {py_ver}   Thư mục: {ROOT}{admin_tag}")
         print()
-        print(f"  {bold('--- Dev (may local) ---')}")
-        print(f"    [1] Kiem tra he thong")
-        print(f"    [2] Dev Setup          (venv + packages + models)")
-        print(f"    [3] Build              (frontend + .NET publish)")
+        print(f"  {bold('─── Phát triển (máy local) ───')}")
+        print(f"    [1]  Kiểm tra hệ thống")
+        print(f"    [2]  Cài đặt dev         (venv + gói + mô hình)")
+        print(f"    [3]  Build               (giao diện + .NET)")
         print()
-        print(f"  {bold('--- Server Deploy ---')}")
-        print(f"    [4] Server Deploy      (venv + packages tren server)")
-        print(f"    [5] Cai Windows Svc    (dang ky NSSM services)")
-        print(f"    [6] Cau hinh IIS       (reverse proxy)")
-        print(f"    [7] Go Windows Svc     (xoa services)")
+        print(f"  {bold('─── Triển khai máy chủ ───')}")
+        print(f"    [4]  Triển khai          (venv + gói trên server)")
+        print(f"    [5]  Cài dịch vụ         (đăng ký NSSM)")
+        print(f"    [6]  Cấu hình IIS        (reverse proxy)")
+        print(f"    [7]  Gỡ dịch vụ          (xoá dịch vụ)")
         print()
-        print(f"  {bold('--- Quan ly ---')}")
-        print(f"    [8] Trang thai         (services + health check)")
-        print(f"    [9] Restart Services   (stop + start)")
-        print(f"   [10] Xem Logs")
+        print(f"  {bold('─── Quản lý ───')}")
+        print(f"    [8]  Trạng thái          (dịch vụ + health check)")
+        print(f"    [9]  Khởi động lại       (dừng + chạy lại)")
+        print(f"   [10]  Xem nhật ký")
         print()
-        print(f"  {bold('--- Dev Mode ---')}")
-        print(f"   [11] Start dev          (mo cua so cmd)")
-        print(f"   [12] Stop dev           (kill processes)")
+        print(f"  {bold('─── Chế độ phát triển ───')}")
+        print(f"   [11]  Chạy dev            (mở cửa sổ cmd)")
+        print(f"   [12]  Dừng dev            (tắt tiến trình)")
         print()
-        print(f"    [0] Thoat")
+        print(f"    [0]  Thoát")
         print()
 
-        choice = input("  Chon [0-12]: ").strip()
+        choice = input("  Chọn [0-12]: ").strip()
 
         if   choice == "1":  check_system()
         elif choice == "2":  cmd_dev_setup()
@@ -1268,23 +1247,25 @@ def main_menu():
         elif choice == "11": cmd_dev_start()
         elif choice == "12": cmd_dev_stop()
         elif choice == "0":
-            print(f"\n  {dim('Bye!')}\n")
+            print(f"\n  {dim('Tạm biệt!')}\n")
             break
         else:
-            warn("Lua chon khong hop le")
+            warn("Lựa chọn không hợp lệ")
             time.sleep(1)
 
 # ══════════════════════════════════════════════════════════════════════════
-#  CLI ENTRY POINT
+#  ĐIỂM VÀO
 # ══════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="OpenRAG Deploy Manager")
+    p = argparse.ArgumentParser(description="OpenRAG — Trình quản lý triển khai")
     p.add_argument("command", nargs="?", default=None,
                    choices=["setup", "build", "deploy", "services",
                             "iis", "status", "restart", "start", "stop", "check"])
-    p.add_argument("--skip-model", action="store_true")
-    p.add_argument("--force", action="store_true")
+    p.add_argument("--skip-model", action="store_true",
+                   help="Bỏ qua tải mô hình AI")
+    p.add_argument("--force", action="store_true",
+                   help="Xoá venv cũ, cài lại từ đầu")
     args = p.parse_args()
 
     if args.command is None:
