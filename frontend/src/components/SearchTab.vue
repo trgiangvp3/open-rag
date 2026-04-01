@@ -1,6 +1,6 @@
 <script setup lang="ts">
 defineOptions({ name: 'SearchTab' })
-import { ref, computed, nextTick, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { search, getDocumentMarkdown, listDomains, type ChunkResult, type DocumentChunk, type DomainInfo } from '../api'
 import { useSearchSettingsStore } from '../stores/searchSettings'
 import { useCollectionsStore } from '../stores/collections'
@@ -114,10 +114,6 @@ function getDocLabel(r: ChunkResult): string {
   const title = (r.metadata?.document_title as string | undefined)?.replace(/\n/g, ' ').trim()
   if (title) return `${name} - ${title}`
   return name
-}
-
-function getSnippet(r: ChunkResult): string {
-  return r.text.replace(/[#*`>]/g, '').replace(/\n+/g, ' ').slice(0, 300)
 }
 
 function scoreTooltip(score: number, isRerank: boolean): string {

@@ -1,5 +1,6 @@
 """Embedding module using sentence-transformers (bge-m3)."""
 
+import gc
 import logging
 from functools import lru_cache
 
@@ -24,13 +25,15 @@ class Embedder:
         self.device = _resolve_device(device)
         logger.info(f"Loading embedding model '{model_name}' on {self.device}...")
         self.model = SentenceTransformer(model_name, device=self.device)
+        self.model.half()  # fp16 — halves memory usage
         self._dim = self.model.get_sentence_embedding_dimension()
-        logger.info(f"Model loaded. Dimension: {self._dim}")
+        logger.info(f"Model loaded (fp16). Dimension: {self._dim}")
 
     @property
     def dimension(self) -> int:
         return self._dim
 
+    @torch.inference_mode()
     def embed_texts(self, texts: list[str], batch_size: int = 32) -> list[list[float]]:
         import time
         logger.info(f"Embedding {len(texts)} texts on {self.device}...")
@@ -41,10 +44,15 @@ class Embedder:
             show_progress_bar=False,
             normalize_embeddings=True,
         )
+        result = embeddings.tolist()
+        del embeddings
         elapsed = time.time() - start
         logger.info(f"Embedded {len(texts)} texts in {elapsed:.1f}s ({elapsed/len(texts):.2f}s/text)")
-        return embeddings.tolist()
+        if len(texts) > 50:
+            gc.collect()
+        return result
 
+    @torch.inference_mode()
     def embed_query(self, query: str) -> list[float]:
         return self.embed_texts([query])[0]
 

@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
     global store, hybrid_searcher
     logger.info("Starting ML service — pre-loading embedding model...")
     get_embedder()
-    get_reranker()
+    # Reranker is lazy-loaded on first rerank request to save ~2 GB RAM
     store = VectorStore()
     hybrid_searcher = HybridSearcher()
     logger.info("ML service ready.")

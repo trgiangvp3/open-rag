@@ -22,7 +22,7 @@ const chunks = ref<DocumentChunk[]>([])
 const contentLoading = ref(false)
 
 // Metadata editing
-const metaForm = ref<Record<string, unknown>>({})
+const metaForm = ref<Record<string, any>>({})
 const metaSaving = ref(false)
 const metaMsg = ref('')
 const allDomains = ref<DomainInfo[]>([])

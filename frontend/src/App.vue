@@ -35,7 +35,7 @@ watch(() => auth.isLoggedIn, (loggedIn) => {
 })
 
 // Guard: redirect non-admin from admin routes
-watch(() => route.name, (name) => {
+watch(() => route.name, () => {
   if (route.meta.requiresAdmin && !auth.isAdmin) router.replace('/')
 })
 
