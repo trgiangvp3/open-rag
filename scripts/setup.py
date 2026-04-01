@@ -44,6 +44,7 @@ FRONTEND   = ROOT / "frontend"
 DOTNET_API = ROOT / "OpenRAG.Api"
 
 PYTHON_MIN      = (3, 10)
+PYTHON_MAX      = (3, 12)   # PyTorch chưa hỗ trợ 3.13+
 EMBEDDING_MODEL = "BAAI/bge-m3"
 RERANKER_MODEL  = "BAAI/bge-reranker-v2-m3"
 
