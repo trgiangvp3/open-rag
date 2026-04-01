@@ -607,19 +607,31 @@ def cmd_build():
 
     data_pub = PUBLISH / "data"
     data_pub.mkdir(exist_ok=True)
-    for d in ["chroma", "uploads", "bm25"]:
-        (data_pub / d).mkdir(exist_ok=True)
+    (data_pub / "uploads").mkdir(exist_ok=True)
+
     db = ROOT / "data" / "openrag.db"
     if db.exists():
         shutil.copy2(db, data_pub)
         ok("Đã sao chép CSDL")
+
+    # Copy ChromaDB + BM25 indexes (pre-indexed data)
+    data_src = ROOT / "data"
+    for name in ["chroma", "bm25"]:
+        src = data_src / name
+        dst = data_pub / name
+        if src.exists() and any(src.iterdir()):
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+            size_mb = sum(f.stat().st_size for f in dst.rglob("*") if f.is_file()) / 1024 / 1024
+            ok(f"Đã sao chép {name}/ ({size_mb:.1f} MB)")
+        else:
+            dst.mkdir(exist_ok=True)
 
     ok("Đã sao chép dịch vụ ML")
 
     show_box("Build hoàn tất!", [
         "publish/api/           .NET API + giao diện",
         "publish/ml_service/    Dịch vụ ML Python",
-        "publish/data/          SQLite + ChromaDB",
+        "publish/data/          SQLite + ChromaDB + BM25",
         "",
         "Bước tiếp: Sao chép 'publish/' lên máy chủ",
         "           rồi chạy mục [4] Triển khai",
@@ -1352,6 +1364,118 @@ WEB_DEPLOY_SITE = "OpenRag"
 WEB_DEPLOY_USER = r"INSTANCE-078585\Administrator"
 PRODUCTION_URL  = "http://vanban.fasoft.vn"
 
+def _find_msdeploy() -> str | None:
+    """Find msdeploy.exe on this machine."""
+    candidates = [
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "IIS" / "Microsoft Web Deploy V3" / "msdeploy.exe",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "IIS" / "Microsoft Web Deploy V3" / "msdeploy.exe",
+    ]
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    # Try PATH
+    r = subprocess.run(["where", "msdeploy.exe"], capture_output=True, text=True)
+    if r.returncode == 0:
+        return r.stdout.strip().splitlines()[0]
+    return None
+
+
+def _sync_data_to_server(password: str):
+    """Sync local data (DB + ChromaDB + BM25) to server via MSDeploy."""
+    data_src = ROOT / "data"
+
+    # Check what we have locally
+    db_file = data_src / "openrag.db"
+    chroma_dir = data_src / "chroma"
+    bm25_dir = data_src / "bm25"
+
+    has_db = db_file.exists()
+    has_chroma = chroma_dir.exists() and any(chroma_dir.rglob("*"))
+    has_bm25 = bm25_dir.exists() and any(bm25_dir.rglob("*"))
+
+    if not has_db and not has_chroma and not has_bm25:
+        info("Không có data cục bộ để đồng bộ")
+        return
+
+    print()
+    info("Data cục bộ tìm thấy:")
+    if has_db:
+        size = db_file.stat().st_size / 1024 / 1024
+        print(f"    openrag.db        ({size:.1f} MB)")
+    if has_chroma:
+        size = sum(f.stat().st_size for f in chroma_dir.rglob("*") if f.is_file()) / 1024 / 1024
+        print(f"    chroma/           ({size:.1f} MB)")
+    if has_bm25:
+        size = sum(f.stat().st_size for f in bm25_dir.rglob("*") if f.is_file()) / 1024 / 1024
+        print(f"    bm25/             ({size:.1f} MB)")
+    print()
+
+    if not confirm("Đồng bộ data lên server?"):
+        return
+
+    msdeploy = _find_msdeploy()
+    if not msdeploy:
+        warn("Không tìm thấy msdeploy.exe — cần cài Web Deploy trên máy dev")
+        warn("Hoặc copy thủ công thư mục data/ lên C:\\OpenRAG\\")
+        return
+
+    # Parse server hostname from deploy URL
+    from urllib.parse import urlparse
+    parsed = urlparse(WEB_DEPLOY_URL)
+    computer_name = f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname
+
+    base_args = [
+        msdeploy, "-verb:sync",
+        f"-dest:computerName='{WEB_DEPLOY_URL}',userName='{WEB_DEPLOY_USER}',password='{password}',authType='Basic'",
+        "-allowUntrusted",
+    ]
+
+    # Sync DB → C:\OpenRAG\AppData\openrag.db
+    if has_db:
+        info("Đồng bộ openrag.db → AppData/...")
+        r = subprocess.run(
+            base_args + [
+                f"-source:filePath='{db_file}'",
+                f"-dest:filePath='{INSTALL_DIR / 'AppData' / 'openrag.db'}'",
+            ],
+            capture_output=True, text=True, shell=True,
+        )
+        if r.returncode == 0:
+            ok("Đã đồng bộ openrag.db")
+        else:
+            warn(f"Lỗi đồng bộ DB: {r.stderr.strip()[:200]}")
+
+    # Sync chroma/ → C:\OpenRAG\data\chroma\
+    if has_chroma:
+        info("Đồng bộ chroma/ → data/chroma/...")
+        r = subprocess.run(
+            base_args + [
+                f"-source:contentPath='{chroma_dir}'",
+                f"-dest:contentPath='{INSTALL_DIR / 'data' / 'chroma'}'",
+            ],
+            capture_output=True, text=True, shell=True,
+        )
+        if r.returncode == 0:
+            ok("Đã đồng bộ chroma/")
+        else:
+            warn(f"Lỗi đồng bộ chroma: {r.stderr.strip()[:200]}")
+
+    # Sync bm25/ → C:\OpenRAG\data\bm25\
+    if has_bm25:
+        info("Đồng bộ bm25/ → data/bm25/...")
+        r = subprocess.run(
+            base_args + [
+                f"-source:contentPath='{bm25_dir}'",
+                f"-dest:contentPath='{INSTALL_DIR / 'data' / 'bm25'}'",
+            ],
+            capture_output=True, text=True, shell=True,
+        )
+        if r.returncode == 0:
+            ok("Đã đồng bộ bm25/")
+        else:
+            warn(f"Lỗi đồng bộ bm25: {r.stderr.strip()[:200]}")
+
+
 def cmd_web_deploy():
     """Build frontend + Web Deploy lên IIS."""
     banner()
@@ -1365,7 +1489,7 @@ def cmd_web_deploy():
     if not confirm("Bắt đầu deploy?", default=True):
         return
 
-    total = 3
+    total = 4
     n = 0
     def s(msg): nonlocal n; n += 1; step(n, total, msg)
 
@@ -1408,17 +1532,7 @@ def cmd_web_deploy():
         "-c", "Release",
     ])
 
-    if result:
-        print()
-        show_box("Deploy thành công!", [
-            f"URL:      {PRODUCTION_URL}",
-            f"Site:     {WEB_DEPLOY_SITE}",
-            f"Máy chủ:  {WEB_DEPLOY_URL}",
-            "",
-            "Lưu ý: Dịch vụ ML (Python) cần chạy riêng",
-            "       trên server qua NSSM hoặc thủ công.",
-        ])
-    else:
+    if not result:
         print()
         fail("Web Deploy thất bại!")
         print()
@@ -1427,9 +1541,48 @@ def cmd_web_deploy():
         print(f"    2. Port 12178 đã mở trong firewall?")
         print(f"    3. ASP.NET Core 8.0 Hosting Bundle đã cài?")
         print(f"    4. WebSocket Protocol đã bật trong IIS?")
+        print()
+        pause()
+        return
+
+    ok("Deploy binaries thành công")
+
+    # 4. Sync data (DB + ChromaDB + BM25)
+    s("Đồng bộ data (DB + ChromaDB + BM25)")
+    _sync_data_to_server(password)
+
+    print()
+    show_box("Deploy hoàn tất!", [
+        f"URL:      {PRODUCTION_URL}",
+        f"Site:     {WEB_DEPLOY_SITE}",
+        f"Máy chủ:  {WEB_DEPLOY_URL}",
+        "",
+        "Lưu ý: Nếu đã đồng bộ data, cần restart dịch vụ ML",
+        "       trên server để reload ChromaDB + BM25.",
+    ])
 
     print()
     pause()
+
+def cmd_sync_data():
+    """Đồng bộ data (DB + ChromaDB + BM25) lên server qua MSDeploy."""
+    banner()
+    print(f"  {bold('Đồng bộ data lên máy chủ')}\n")
+    print(f"  Máy chủ:  {WEB_DEPLOY_URL}")
+    print(f"  Đích:     {INSTALL_DIR}")
+    print()
+
+    import getpass
+    password = getpass.getpass(f"  Mật khẩu cho {WEB_DEPLOY_USER}: ")
+    if not password:
+        fail("Chưa nhập mật khẩu!")
+        pause()
+        return
+
+    _sync_data_to_server(password)
+    print()
+    pause()
+
 
 # ══════════════════════════════════════════════════════════════════════════
 #  MENU CHÍNH
@@ -1454,22 +1607,23 @@ def main_menu():
         print(f"    [5]  Triển khai ML       (venv + gói trên server)")
         print(f"    [6]  Cài dịch vụ ML      (đăng ký NSSM)")
         print(f"    [7]  Cấu hình IIS        (reverse proxy)")
-        print(f"    [8]  Gỡ dịch vụ          (xoá dịch vụ)")
-        print(f"    [9]  Dọn dẹp             (xoá cài đặt cũ)")
+        print(f"    [8]  Đồng bộ data        (DB + ChromaDB + BM25)")
+        print(f"    [9]  Gỡ dịch vụ          (xoá dịch vụ)")
+        print(f"   [10]  Dọn dẹp             (xoá cài đặt cũ)")
         print()
         print(f"  {bold('─── Quản lý ───')}")
-        print(f"   [10]  Trạng thái          (dịch vụ + health check)")
-        print(f"   [11]  Khởi động lại       (dừng + chạy lại)")
-        print(f"   [12]  Xem nhật ký")
+        print(f"   [11]  Trạng thái          (dịch vụ + health check)")
+        print(f"   [12]  Khởi động lại       (dừng + chạy lại)")
+        print(f"   [13]  Xem nhật ký")
         print()
         print(f"  {bold('─── Chế độ phát triển ───')}")
-        print(f"   [13]  Chạy dev            (mở cửa sổ cmd)")
-        print(f"   [14]  Dừng dev            (tắt tiến trình)")
+        print(f"   [14]  Chạy dev            (mở cửa sổ cmd)")
+        print(f"   [15]  Dừng dev            (tắt tiến trình)")
         print()
         print(f"    [0]  Thoát")
         print()
 
-        choice = input("  Chọn [0-14]: ").strip()
+        choice = input("  Chọn [0-15]: ").strip()
 
         if   choice == "1":  check_system()
         elif choice == "2":  cmd_dev_setup()
@@ -1478,13 +1632,14 @@ def main_menu():
         elif choice == "5":  cmd_server_deploy()
         elif choice == "6":  cmd_install_services()
         elif choice == "7":  cmd_iis_setup()
-        elif choice == "8":  cmd_uninstall_services()
-        elif choice == "9":  cmd_cleanup()
-        elif choice == "10": cmd_status()
-        elif choice == "11": cmd_restart_services()
-        elif choice == "12": cmd_view_logs()
-        elif choice == "13": cmd_dev_start()
-        elif choice == "14": cmd_dev_stop()
+        elif choice == "8":  cmd_sync_data()
+        elif choice == "9":  cmd_uninstall_services()
+        elif choice == "10": cmd_cleanup()
+        elif choice == "11": cmd_status()
+        elif choice == "12": cmd_restart_services()
+        elif choice == "13": cmd_view_logs()
+        elif choice == "14": cmd_dev_start()
+        elif choice == "15": cmd_dev_stop()
         elif choice == "0":
             print(f"\n  {dim('Tạm biệt!')}\n")
             break
@@ -1499,7 +1654,7 @@ def main_menu():
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="OpenRAG — Trình quản lý triển khai")
     p.add_argument("command", nargs="?", default=None,
-                   choices=["setup", "build", "deploy", "webdeploy", "services",
+                   choices=["setup", "build", "deploy", "webdeploy", "syncdata", "services",
                             "iis", "status", "restart", "start", "stop", "check", "cleanup"])
     p.add_argument("--skip-model", action="store_true",
                    help="Bỏ qua tải mô hình AI")
@@ -1513,6 +1668,7 @@ if __name__ == "__main__":
     elif args.command == "setup":    cmd_dev_setup(skip_model=args.skip_model, force=args.force)
     elif args.command == "build":    cmd_build()
     elif args.command == "webdeploy": cmd_web_deploy()
+    elif args.command == "syncdata":  cmd_sync_data()
     elif args.command == "deploy":   cmd_server_deploy()
     elif args.command == "services": cmd_install_services()
     elif args.command == "iis":      cmd_iis_setup()
