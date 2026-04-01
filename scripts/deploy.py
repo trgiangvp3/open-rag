@@ -1197,6 +1197,94 @@ def cmd_view_logs():
     pause()
 
 # ══════════════════════════════════════════════════════════════════════════
+#  WEB DEPLOY
+# ══════════════════════════════════════════════════════════════════════════
+
+WEB_DEPLOY_URL  = "https://deploy.giatocnguyenhuu.vn:8172/msdeploy.axd"
+WEB_DEPLOY_SITE = "OpenRag"
+WEB_DEPLOY_USER = r"INSTANCE-078585\Administrator"
+PRODUCTION_URL  = "http://vanban.fasoft.vn"
+
+def cmd_web_deploy():
+    """Build frontend + Web Deploy lên IIS."""
+    banner()
+    print(f"  {bold('Web Deploy lên IIS')}\n")
+
+    print(f"  Máy chủ:  {WEB_DEPLOY_URL}")
+    print(f"  Site:     {WEB_DEPLOY_SITE}")
+    print(f"  URL:      {PRODUCTION_URL}")
+    print()
+
+    if not confirm("Bắt đầu deploy?", default=True):
+        return
+
+    total = 3
+    n = 0
+    def s(msg): nonlocal n; n += 1; step(n, total, msg)
+
+    # 1. Build frontend
+    s("Build giao diện (Vue → wwwroot)")
+    if FRONTEND.exists():
+        if not run(["npm", "install", "--prefer-offline"], cwd=FRONTEND):
+            return
+        if not run(["npm", "run", "build"], cwd=FRONTEND):
+            return
+        ok("Giao diện đã build")
+    else:
+        warn("Thư mục frontend/ không có — bỏ qua")
+
+    # 2. Chuẩn bị
+    s("Chuẩn bị")
+    logs_dir = DOTNET_API / "logs"
+    data_dir = DOTNET_API / "data"
+    logs_dir.mkdir(exist_ok=True)
+    data_dir.mkdir(exist_ok=True)
+    gitkeep = data_dir / ".gitkeep"
+    if not gitkeep.exists():
+        gitkeep.write_text("")
+    ok("Thư mục data/ và logs/ sẵn sàng")
+
+    # 3. Web Deploy
+    s("Xuất bản qua Web Deploy")
+
+    import getpass
+    password = getpass.getpass(f"  Mật khẩu cho {WEB_DEPLOY_USER}: ")
+    if not password:
+        fail("Chưa nhập mật khẩu!")
+        pause()
+        return
+
+    result = run([
+        "dotnet", "publish", str(DOTNET_API / "OpenRAG.Api.csproj"),
+        "/p:PublishProfile=IIS-WebDeploy",
+        f"/p:Password={password}",
+        "-c", "Release",
+    ])
+
+    if result:
+        print()
+        show_box("Deploy thành công!", [
+            f"URL:      {PRODUCTION_URL}",
+            f"Site:     {WEB_DEPLOY_SITE}",
+            f"Máy chủ:  {WEB_DEPLOY_URL}",
+            "",
+            "Lưu ý: Dịch vụ ML (Python) cần chạy riêng",
+            "       trên server qua NSSM hoặc thủ công.",
+        ])
+    else:
+        print()
+        fail("Web Deploy thất bại!")
+        print()
+        print(f"  Kiểm tra:")
+        print(f"    1. Web Deploy đã cài trên server chưa?")
+        print(f"    2. Port 8172 đã mở trong firewall?")
+        print(f"    3. ASP.NET Core 8.0 Hosting Bundle đã cài?")
+        print(f"    4. WebSocket Protocol đã bật trong IIS?")
+
+    print()
+    pause()
+
+# ══════════════════════════════════════════════════════════════════════════
 #  MENU CHÍNH
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -1215,37 +1303,39 @@ def main_menu():
         print(f"    [3]  Build               (giao diện + .NET)")
         print()
         print(f"  {bold('─── Triển khai máy chủ ───')}")
-        print(f"    [4]  Triển khai          (venv + gói trên server)")
-        print(f"    [5]  Cài dịch vụ         (đăng ký NSSM)")
-        print(f"    [6]  Cấu hình IIS        (reverse proxy)")
-        print(f"    [7]  Gỡ dịch vụ          (xoá dịch vụ)")
+        print(f"    [4]  {bold('Web Deploy')}        (build + deploy lên IIS)")
+        print(f"    [5]  Triển khai ML       (venv + gói trên server)")
+        print(f"    [6]  Cài dịch vụ ML      (đăng ký NSSM)")
+        print(f"    [7]  Cấu hình IIS        (reverse proxy)")
+        print(f"    [8]  Gỡ dịch vụ          (xoá dịch vụ)")
         print()
         print(f"  {bold('─── Quản lý ───')}")
-        print(f"    [8]  Trạng thái          (dịch vụ + health check)")
-        print(f"    [9]  Khởi động lại       (dừng + chạy lại)")
-        print(f"   [10]  Xem nhật ký")
+        print(f"    [9]  Trạng thái          (dịch vụ + health check)")
+        print(f"   [10]  Khởi động lại       (dừng + chạy lại)")
+        print(f"   [11]  Xem nhật ký")
         print()
         print(f"  {bold('─── Chế độ phát triển ───')}")
-        print(f"   [11]  Chạy dev            (mở cửa sổ cmd)")
-        print(f"   [12]  Dừng dev            (tắt tiến trình)")
+        print(f"   [12]  Chạy dev            (mở cửa sổ cmd)")
+        print(f"   [13]  Dừng dev            (tắt tiến trình)")
         print()
         print(f"    [0]  Thoát")
         print()
 
-        choice = input("  Chọn [0-12]: ").strip()
+        choice = input("  Chọn [0-13]: ").strip()
 
         if   choice == "1":  check_system()
         elif choice == "2":  cmd_dev_setup()
         elif choice == "3":  cmd_build()
-        elif choice == "4":  cmd_server_deploy()
-        elif choice == "5":  cmd_install_services()
-        elif choice == "6":  cmd_iis_setup()
-        elif choice == "7":  cmd_uninstall_services()
-        elif choice == "8":  cmd_status()
-        elif choice == "9":  cmd_restart_services()
-        elif choice == "10": cmd_view_logs()
-        elif choice == "11": cmd_dev_start()
-        elif choice == "12": cmd_dev_stop()
+        elif choice == "4":  cmd_web_deploy()
+        elif choice == "5":  cmd_server_deploy()
+        elif choice == "6":  cmd_install_services()
+        elif choice == "7":  cmd_iis_setup()
+        elif choice == "8":  cmd_uninstall_services()
+        elif choice == "9":  cmd_status()
+        elif choice == "10": cmd_restart_services()
+        elif choice == "11": cmd_view_logs()
+        elif choice == "12": cmd_dev_start()
+        elif choice == "13": cmd_dev_stop()
         elif choice == "0":
             print(f"\n  {dim('Tạm biệt!')}\n")
             break
@@ -1260,7 +1350,7 @@ def main_menu():
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="OpenRAG — Trình quản lý triển khai")
     p.add_argument("command", nargs="?", default=None,
-                   choices=["setup", "build", "deploy", "services",
+                   choices=["setup", "build", "deploy", "webdeploy", "services",
                             "iis", "status", "restart", "start", "stop", "check"])
     p.add_argument("--skip-model", action="store_true",
                    help="Bỏ qua tải mô hình AI")
@@ -1273,6 +1363,7 @@ if __name__ == "__main__":
     elif args.command == "check":    check_system()
     elif args.command == "setup":    cmd_dev_setup(skip_model=args.skip_model, force=args.force)
     elif args.command == "build":    cmd_build()
+    elif args.command == "webdeploy": cmd_web_deploy()
     elif args.command == "deploy":   cmd_server_deploy()
     elif args.command == "services": cmd_install_services()
     elif args.command == "iis":      cmd_iis_setup()

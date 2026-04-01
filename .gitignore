@@ -26,6 +26,10 @@ venv/
 *.sln.docstates
 OpenRAG.Api/publish/
 OpenRAG.Api/wwwroot/
+OpenRAG.Api/AppData/*
+!OpenRAG.Api/AppData/.gitkeep
+OpenRAG.Api/logs/
+/publish/
 
 # NuGet
 *.nupkg

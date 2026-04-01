@@ -8,6 +8,9 @@ using OpenRAG.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ── IIS: đảm bảo working directory = content root ───────────────────────
+Directory.SetCurrentDirectory(builder.Environment.ContentRootPath);
+
 // ── Database ──────────────────────────────────────────────────────────────
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("Default")
@@ -72,7 +75,10 @@ builder.Services.AddSignalR();
 // ── Controllers + CORS ───────────────────────────────────────────────────
 builder.Services.AddControllers();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
-    p.WithOrigins("http://localhost:5173", "http://localhost:8000")
+    p.WithOrigins(
+         "http://localhost:5173",
+         "http://localhost:8000",
+         "http://vanban.fasoft.vn")
      .AllowAnyMethod()
      .AllowAnyHeader()
      .AllowCredentials()));

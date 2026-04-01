@@ -6,6 +6,21 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <!-- Thư mục AppData/ — SQLite DB trên server, không ghi đè khi deploy -->
+  <ItemGroup>
+    <Content Include="AppData\.gitkeep" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Scripts + ML service — đưa vào publish output -->
+  <ItemGroup>
+    <None Include="..\scripts\deploy.py" Link="scripts\deploy.py" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\deploy.cmd" Link="scripts\deploy.cmd" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\scripts\webdeploy.cmd" Link="scripts\webdeploy.cmd" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\ml_service\**\*.py" Link="ml_service\%(RecursiveDir)%(Filename)%(Extension)" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\ml_service\requirements.txt" Link="ml_service\requirements.txt" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\.env" Link=".env" CopyToPublishDirectory="PreserveNewest" Condition="Exists('..\.env')" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
     <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
