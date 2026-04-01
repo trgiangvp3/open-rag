@@ -133,6 +133,57 @@ def show_box(title, lines):
         print(f"  | {l}{' ' * (w - len(l) - 1)}|")
     print(f"  +{'=' * w}+")
 
+def _getpass_masked(prompt: str) -> str:
+    """Password prompt that shows * for each character (Windows)."""
+    import msvcrt
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    chars: list[str] = []
+    while True:
+        c = msvcrt.getwch()
+        if c in ("\r", "\n"):
+            sys.stdout.write("\n")
+            break
+        elif c == "\x03":  # Ctrl+C
+            raise KeyboardInterrupt
+        elif c in ("\b", "\x7f"):  # Backspace
+            if chars:
+                chars.pop()
+                sys.stdout.write("\b \b")
+                sys.stdout.flush()
+        elif c == "\x00" or c == "\xe0":
+            msvcrt.getwch()  # skip special key
+        else:
+            chars.append(c)
+            sys.stdout.write("*")
+            sys.stdout.flush()
+    return "".join(chars)
+
+
+_PASS_ENV = "OPENRAG_DEPLOY_PASSWORD"
+
+def get_deploy_password() -> str | None:
+    """Get deploy password: env var → masked prompt → offer to save for session."""
+    cached = os.environ.get(_PASS_ENV)
+    if cached:
+        info(f"Mật khẩu từ biến môi trường {_PASS_ENV}")
+        return cached
+
+    try:
+        password = _getpass_masked(f"  Mật khẩu cho {WEB_DEPLOY_USER}: ")
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return None
+
+    if not password:
+        fail("Chưa nhập mật khẩu!")
+        return None
+
+    # Lưu vào env cho process hiện tại (các lần gọi sau trong cùng session)
+    os.environ[_PASS_ENV] = password
+    return password
+
+
 # ══════════════════════════════════════════════════════════════════════════
 #  HÀM HỖ TRỢ
 # ══════════════════════════════════════════════════════════════════════════
@@ -1567,10 +1618,8 @@ def cmd_web_deploy():
     # 3. Web Deploy
     s("Xuất bản qua Web Deploy")
 
-    import getpass
-    password = getpass.getpass(f"  Mật khẩu cho {WEB_DEPLOY_USER}: ")
+    password = get_deploy_password()
     if not password:
-        fail("Chưa nhập mật khẩu!")
         pause()
         return
 
@@ -1621,10 +1670,8 @@ def cmd_sync_data():
     print(f"  Đích:     {INSTALL_DIR}")
     print()
 
-    import getpass
-    password = getpass.getpass(f"  Mật khẩu cho {WEB_DEPLOY_USER}: ")
+    password = get_deploy_password()
     if not password:
-        fail("Chưa nhập mật khẩu!")
         pause()
         return
 
