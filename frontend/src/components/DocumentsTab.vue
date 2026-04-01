@@ -298,10 +298,11 @@ function sortIndicator(field: string) { return sortBy.value !== field ? '' : sor
                 </span>
                 <span v-else-if="doc.status === 'failed'" class="text-[10px] px-1.5 py-0.5 rounded-full font-medium" style="background: var(--score-low-bg); color: var(--score-low-text)">lỗi</span>
               </p>
-              <p class="th-text3 text-xs mt-0.5">
-                <span v-if="doc.documentTypeDisplay" class="th-accent/80">{{ doc.documentTypeDisplay }}</span>
+              <p v-if="doc.documentTitle" class="th-text2 text-xs mt-0.5 truncate">{{ doc.documentTitle.replace(/\n/g, ' ') }}</p>
+              <p class="th-text3 text-[10px] mt-0.5">
+                <span v-if="doc.documentTypeDisplay">{{ doc.documentTypeDisplay }}</span>
                 <span v-if="doc.documentNumber"> {{ doc.documentNumber }}</span>
-                <span v-if="doc.issuingAuthority" class="th-text3"> · {{ doc.issuingAuthority }}</span>
+                <span v-if="doc.issuedDate"> · {{ doc.issuedDate }}</span>
               </p>
               <!-- Progress bar for indexing docs -->
               <div v-if="doc.status === 'indexing' && getProgress({ id: 0, type: 'file', label: doc.filename, status: 'uploading', message: '', retries: 0, documentId: doc.id })"
@@ -322,11 +323,15 @@ function sortIndicator(field: string) { return sortBy.value !== field ? '' : sor
         <div v-if="selectedDoc" class="w-[45%] flex-shrink-0 flex flex-col min-w-0 th-elevated border th-border rounded-r-xl overflow-hidden">
           <div class="px-4 py-3 border-b th-border flex items-center justify-between flex-shrink-0">
             <div class="min-w-0">
-              <p class="th-text text-sm font-medium truncate">{{ selectedDoc.filename }}</p>
+              <p class="th-text text-sm font-medium truncate">
+                {{ selectedDoc.documentTypeDisplay && selectedDoc.documentNumber
+                  ? `${selectedDoc.documentTypeDisplay} ${selectedDoc.documentNumber}`
+                  : selectedDoc.filename }}
+              </p>
+              <p v-if="selectedDoc.documentTitle" class="th-text2 text-xs truncate mt-0.5">{{ selectedDoc.documentTitle }}</p>
               <div class="flex items-center gap-2 mt-1">
-                <span v-if="selectedDoc.documentTypeDisplay" class="text-[10px] th-btn/30 th-accent px-1.5 py-0.5 rounded">{{ selectedDoc.documentTypeDisplay }}</span>
-                <span v-if="selectedDoc.documentNumber" class="text-[10px] th-bg3 th-text px-1.5 py-0.5 rounded font-mono">{{ selectedDoc.documentNumber }}</span>
-                <span class="th-text3 text-xs">{{ selectedDoc.chunkCount }} chunks</span>
+                <span v-if="selectedDoc.issuedDate" class="th-text3 text-[10px]">{{ selectedDoc.issuedDate }}</span>
+                <span class="th-text3 text-[10px]">{{ selectedDoc.chunkCount }} chunks</span>
               </div>
             </div>
             <div class="flex items-center gap-2 flex-shrink-0">
@@ -339,7 +344,7 @@ function sortIndicator(field: string) { return sortBy.value !== field ? '' : sor
           </div>
           <div v-if="contentLoading" class="flex-1 flex items-center justify-center th-text3 text-sm">Đang tải...</div>
           <div v-else-if="viewMode === 'markdown'" class="flex-1 overflow-y-auto p-5">
-            <div v-if="markdown" class="prose prose-invert prose-sm max-w-none" v-html="renderMd(markdown)" />
+            <div v-if="markdown" class="prose prose-sm dark:prose-invert max-w-none" style="color: var(--text-primary)" v-html="renderMd(markdown)" />
             <div v-else class="th-text3 text-sm">Không có nội dung</div>
           </div>
           <div v-else class="flex-1 overflow-y-auto">

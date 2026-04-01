@@ -848,9 +848,12 @@ public static partial class LegalHtmlParser
     private static string NormalizeText(string html)
     {
         var decoded = WebUtility.HtmlDecode(html);
-        // Normalize whitespace but preserve newlines
+        // Collapse all whitespace (single newlines from HTML word-wrap) into spaces
+        // Only preserve double newlines as paragraph breaks
         decoded = Regex.Replace(decoded, @"[ \t]+", " ");
-        decoded = Regex.Replace(decoded, @" *\n *", "\n");
+        decoded = Regex.Replace(decoded, @"\n{2,}", "\u0000"); // protect paragraph breaks
+        decoded = Regex.Replace(decoded, @" *\n *", " ");       // single newline → space
+        decoded = decoded.Replace('\u0000', '\n');               // restore paragraph breaks
         return decoded.Trim();
     }
 
