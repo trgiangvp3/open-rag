@@ -2,8 +2,8 @@
 
 Two-stage retrieval: semantic top-N → cross-encoder re-score → top-K.
 
-Lazy-loaded: the model is only loaded on first rerank request to save ~2 GB RAM
-when reranking is not used.
+Lazy-loaded on first rerank request. Auto-unloads after MODEL_IDLE_TTL seconds
+of inactivity to free ~2 GB RAM.
 """
 
 from __future__ import annotations
@@ -11,15 +11,18 @@ from __future__ import annotations
 import gc
 import logging
 import threading
+import time as _time
 
 import torch
 
-from config import EMBEDDING_DEVICE, RERANKER_MODEL
+from config import EMBEDDING_DEVICE, MODEL_IDLE_TTL, RERANKER_MODEL
 
 logger = logging.getLogger(__name__)
 
+_lock = threading.Lock()
 _reranker: Reranker | None = None
-_reranker_lock = threading.Lock()
+_last_used: float = 0.0
+_timer: threading.Timer | None = None
 
 
 def _resolve_device(device: str) -> str:
@@ -57,11 +60,40 @@ class Reranker:
         return result
 
 
+def _schedule_unload() -> None:
+    """Schedule an idle check after MODEL_IDLE_TTL seconds."""
+    global _timer
+    if _timer is not None:
+        _timer.cancel()
+    _timer = threading.Timer(MODEL_IDLE_TTL, _try_unload)
+    _timer.daemon = True
+    _timer.start()
+
+
+def _try_unload() -> None:
+    """Unload reranker if it hasn't been used since the timer was set."""
+    global _reranker, _timer
+    with _lock:
+        if _reranker is None:
+            return
+        elapsed = _time.time() - _last_used
+        if elapsed >= MODEL_IDLE_TTL:
+            logger.info("Reranker idle for %ds — unloading to free RAM", int(elapsed))
+            del _reranker
+            _reranker = None
+            _timer = None
+            gc.collect()
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        else:
+            _schedule_unload()
+
+
 def get_reranker() -> Reranker:
-    """Lazy singleton — model loaded only on first call."""
-    global _reranker
-    if _reranker is None:
-        with _reranker_lock:
-            if _reranker is None:
-                _reranker = Reranker()
-    return _reranker
+    """Lazy singleton with idle unload. Model loaded on first call."""
+    global _reranker, _last_used
+    with _lock:
+        if _reranker is None:
+            _reranker = Reranker()
+        _last_used = _time.time()
+        _schedule_unload()
+        return _reranker

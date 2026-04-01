@@ -1,15 +1,24 @@
-"""Embedding module using sentence-transformers (bge-m3)."""
+"""Embedding module using sentence-transformers (bge-m3).
+
+Auto-unloads after MODEL_IDLE_TTL seconds of inactivity to free RAM.
+"""
 
 import gc
 import logging
-from functools import lru_cache
+import threading
+import time as _time
 
 import torch
 from sentence_transformers import SentenceTransformer
 
-from config import EMBEDDING_DEVICE, EMBEDDING_MODEL
+from config import EMBEDDING_DEVICE, EMBEDDING_MODEL, MODEL_IDLE_TTL
 
 logger = logging.getLogger(__name__)
+
+_lock = threading.Lock()
+_embedder: Embedder | None = None
+_last_used: float = 0.0
+_timer: threading.Timer | None = None
 
 
 def _resolve_device(device: str) -> str:
@@ -35,9 +44,8 @@ class Embedder:
 
     @torch.inference_mode()
     def embed_texts(self, texts: list[str], batch_size: int = 32) -> list[list[float]]:
-        import time
         logger.info(f"Embedding {len(texts)} texts on {self.device}...")
-        start = time.time()
+        start = _time.time()
         embeddings = self.model.encode(
             texts,
             batch_size=batch_size,
@@ -46,7 +54,7 @@ class Embedder:
         )
         result = embeddings.tolist()
         del embeddings
-        elapsed = time.time() - start
+        elapsed = _time.time() - start
         logger.info(f"Embedded {len(texts)} texts in {elapsed:.1f}s ({elapsed/len(texts):.2f}s/text)")
         if len(texts) > 50:
             gc.collect()
@@ -57,7 +65,41 @@ class Embedder:
         return self.embed_texts([query])[0]
 
 
-@lru_cache(maxsize=1)
+def _schedule_unload() -> None:
+    """Schedule an idle check after MODEL_IDLE_TTL seconds."""
+    global _timer
+    if _timer is not None:
+        _timer.cancel()
+    _timer = threading.Timer(MODEL_IDLE_TTL, _try_unload)
+    _timer.daemon = True
+    _timer.start()
+
+
+def _try_unload() -> None:
+    """Unload embedder if it hasn't been used since the timer was set."""
+    global _embedder, _timer
+    with _lock:
+        if _embedder is None:
+            return
+        elapsed = _time.time() - _last_used
+        if elapsed >= MODEL_IDLE_TTL:
+            logger.info("Embedder idle for %ds — unloading to free RAM", int(elapsed))
+            del _embedder
+            _embedder = None
+            _timer = None
+            gc.collect()
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        else:
+            # Used again in the meantime — reschedule
+            _schedule_unload()
+
+
 def get_embedder() -> Embedder:
-    """Singleton embedder instance."""
-    return Embedder()
+    """Get or create embedder. Resets idle timer on each call."""
+    global _embedder, _last_used
+    with _lock:
+        if _embedder is None:
+            _embedder = Embedder()
+        _last_used = _time.time()
+        _schedule_unload()
+        return _embedder

@@ -35,3 +35,7 @@ BM25_INDEX_DIR = DATA_DIR / "bm25"
 BM25_INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
 BM25_WRITER_HEAP_SIZE: int = int(os.getenv("BM25_WRITER_HEAP_SIZE", str(50_000_000)))
+
+# ── Idle unload ──────────────────────────────────────────────────────────
+# Models are unloaded from RAM after this many seconds of inactivity.
+MODEL_IDLE_TTL: int = int(os.getenv("MODEL_IDLE_TTL", str(600)))  # default 10 min
