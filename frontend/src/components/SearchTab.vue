@@ -1,7 +1,7 @@
 <script setup lang="ts">
 defineOptions({ name: 'SearchTab' })
 import { ref, computed, nextTick, onMounted } from 'vue'
-import { search, getDocumentChunks, listDomains, type ChunkResult, type DocumentChunk, type DomainInfo } from '../api'
+import { search, getDocumentMarkdown, listDomains, type ChunkResult, type DocumentChunk, type DomainInfo } from '../api'
 import { useSearchSettingsStore } from '../stores/searchSettings'
 import { useCollectionsStore } from '../stores/collections'
 import { useProgressHub } from '../composables/useProgressHub'
@@ -50,6 +50,7 @@ const viewerChunks = ref<DocumentChunk[]>([])
 const viewerLoading = ref(false)
 const activeSourceIdx = ref<number | null>(null)
 const highlightChunkId = ref<string | null>(null)
+const fullMarkdown = ref<string | null>(null)
 
 async function doSearch() {
   if (!query.value.trim()) return
@@ -97,7 +98,7 @@ function isCited(index: number) {
 function getSection(r: ChunkResult): string { return getSectionUtil(r.metadata) }
 function getFilename(r: ChunkResult): string { return getFilenameUtil(r.metadata) }
 
-/** Display name: prefer "Thông tư 72/2025/TT-NHNN" over raw filename */
+/** Display name: "Thông tư 72/2025/TT-NHNN" or fallback to filename */
 function getDocName(r: ChunkResult): string {
   const m = r.metadata
   const typeDisplay = m?.document_type_display as string | undefined
@@ -105,6 +106,14 @@ function getDocName(r: ChunkResult): string {
   if (typeDisplay && number) return `${typeDisplay} ${number}`
   if (number) return number
   return getFilename(r)
+}
+
+/** Full doc label: "Thông tư 13/2018/TT-NHNN - Quy định về xxx" */
+function getDocLabel(r: ChunkResult): string {
+  const name = getDocName(r)
+  const title = (r.metadata?.document_title as string | undefined)?.replace(/\n/g, ' ').trim()
+  if (title) return `${name} - ${title}`
+  return name
 }
 
 function getSnippet(r: ChunkResult): string {
@@ -121,6 +130,7 @@ function scoreTooltip(score: number, isRerank: boolean): string {
 
 function openSource(chunk: ChunkResult, idx: number) {
   viewerOpen.value = true
+  fullMarkdown.value = null
   viewerTitle.value = getDocName(chunk) || 'Nguồn'
   activeSourceIdx.value = idx
   viewerChunks.value = [{
@@ -137,19 +147,10 @@ async function loadFullDocument(chunk: DocumentChunk) {
   if (!docId) return
   viewerLoading.value = true
   try {
-    const { data } = await getDocumentChunks(docId, settings.collection)
-    viewerChunks.value = data.chunks
-    await nextTick()
-    const snippet = chunk.text.slice(0, 100)
-    const match = viewerChunks.value.find((c: DocumentChunk) => c.text === chunk.text)
-      ?? viewerChunks.value.find((c: DocumentChunk) => c.text.includes(snippet))
-    if (match) {
-      highlightChunkId.value = match.id
-      await nextTick()
-      document.getElementById(`viewer-chunk-${match.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    }
+    const { data } = await getDocumentMarkdown(docId)
+    fullMarkdown.value = data.markdown
   } catch {
-    viewerChunks.value = []
+    fullMarkdown.value = null
   } finally {
     viewerLoading.value = false
   }
@@ -159,6 +160,7 @@ function closeViewer() {
   viewerOpen.value = false
   activeSourceIdx.value = null
   highlightChunkId.value = null
+  fullMarkdown.value = null
 }
 
 function goHome() {
@@ -350,12 +352,11 @@ function goHome() {
             <div v-for="(r, i) in results" :key="i"
               @click="openSource(r, i)"
               class="group cursor-pointer py-4 border-b th-border2 last:border-0">
-              <!-- Source line: doc name + metadata -->
+              <!-- Source line: doc name + title + date -->
               <div class="flex items-center gap-2 mb-1.5">
                 <span :class="['inline-flex items-center justify-center w-5 h-5 text-[9px] text-white rounded-full font-bold flex-shrink-0', badgeColor(i)]">{{ i + 1 }}</span>
                 <p class="th-text3 text-xs truncate">
-                  {{ getDocName(r) }}
-                  <span v-if="r.metadata?.issuing_authority"> · {{ (r.metadata.issuing_authority as string).replace(/\n/g, ' ') }}</span>
+                  {{ getDocLabel(r) }}
                   <span v-if="r.metadata?.issue_date"> · {{ r.metadata.issue_date }}</span>
                 </p>
               </div>
@@ -403,6 +404,7 @@ function goHome() {
       :loading="viewerLoading"
       :active-idx="activeSourceIdx"
       :highlight-id="highlightChunkId"
+      :full-markdown="fullMarkdown"
       @close="closeViewer"
       @load-full="loadFullDocument"
     />
