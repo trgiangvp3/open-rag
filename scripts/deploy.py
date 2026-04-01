@@ -46,9 +46,8 @@ FRONTEND   = ROOT / "frontend"
 DOTNET_API = ROOT / "OpenRAG.Api"
 PUBLISH    = ROOT / "publish"
 
-# Đường dẫn server
-INSTALL_DIR = Path(r"C:\OpenRAG")              # ML service, NSSM, Python, models
-IIS_SITE_DIR = Path(r"C:\inetpub\websites\OpenRag")  # .NET API (Web Deploy)
+# Đường dẫn server — tất cả nằm trong 1 thư mục
+INSTALL_DIR = Path(r"C:\OpenRAG")
 NSSM_EXE    = INSTALL_DIR / "nssm" / "nssm.exe"
 PY312_DIR   = INSTALL_DIR / "python312"
 PY312_VER   = "3.12.10"
@@ -709,29 +708,24 @@ def cmd_server_deploy():
     shutil.copy2(env_file, ml_dir / ".env")
 
     s("Cấu hình .NET API")
-    # Tìm thư mục API: IIS site hoặc C:\OpenRAG\api
-    api_dir = None
-    for candidate in [IIS_SITE_DIR, INSTALL_DIR / "api"]:
-        if candidate.exists() and (candidate / "OpenRAG.Api.dll").exists():
-            api_dir = candidate
-            break
-    if api_dir:
-        prod_config = api_dir / "appsettings.Production.json"
+    # Tìm API trong thư mục gốc INSTALL_DIR (Web Deploy trỏ vào đây)
+    api_dll = INSTALL_DIR / "OpenRAG.Api.dll"
+    if api_dll.exists():
+        prod_config = INSTALL_DIR / "appsettings.Production.json"
         if not prod_config.exists():
             prod_config.write_text(json.dumps({
                 "ConnectionStrings": {"Default": "Data Source=AppData/openrag.db"},
                 "MlService": {"BaseUrl": "http://127.0.0.1:8001"},
                 "Logging": {"LogLevel": {"Default": "Warning", "Microsoft.AspNetCore": "Warning"}},
             }, indent=2, ensure_ascii=False), encoding="utf-8")
-            ok(f"Đã tạo appsettings.Production.json tại {api_dir}")
+            ok(f"Đã tạo appsettings.Production.json")
         else:
-            ok(f"appsettings.Production.json đã có tại {api_dir}")
-        # Tạo thư mục AppData cho SQLite
-        (api_dir / "AppData").mkdir(exist_ok=True)
-        (api_dir / "logs").mkdir(exist_ok=True)
+            ok("appsettings.Production.json đã có")
+        (INSTALL_DIR / "AppData").mkdir(exist_ok=True)
+        (INSTALL_DIR / "logs").mkdir(exist_ok=True)
     else:
-        info(f"API chưa deploy — sẽ tự cấu hình khi Web Deploy")
-        info(f"  (kiểm tra: {IIS_SITE_DIR})")
+        info("API chưa deploy — chạy Web Deploy trước (mục [4])")
+        info(f"  IIS site trỏ vào: {INSTALL_DIR}")
 
     s("Tải mô hình AI")
     # Trên server, lưu model vào C:\OpenRAG\models (không phụ thuộc user profile)
@@ -924,6 +918,94 @@ def cmd_uninstall_services():
     nssm(["remove", "OpenRAG-API", "confirm"])
     nssm(["remove", "OpenRAG-ML", "confirm"])
     ok("Đã gỡ cài đặt dịch vụ")
+    pause()
+
+def cmd_cleanup():
+    """Dọn dẹp cài đặt cũ trên server."""
+    banner()
+    print(f"  {bold('Dọn dẹp cài đặt cũ')}\n")
+
+    if not is_admin():
+        fail("Cần quyền Administrator!")
+        pause()
+        return
+
+    # Danh sách thư mục/file cũ có thể cần xoá
+    old_paths = [
+        (Path(r"C:\inetpub\websites\OpenRag"), "IIS site cũ (nếu đã chuyển sang C:\\OpenRAG)"),
+        (INSTALL_DIR / "api", "Thư mục api/ cũ (API giờ nằm ở gốc C:\\OpenRAG)"),
+        (INSTALL_DIR / "iis-site", "Thư mục iis-site/ cũ (reverse proxy)"),
+        (INSTALL_DIR / "data", "Thư mục data/ cũ (giờ dùng AppData/)"),
+    ]
+
+    # Cache cũ trong user profile
+    old_cache = _LOCAL_APP / "openrag"
+    if old_cache.exists():
+        old_paths.append((old_cache, f"Cache cũ trong {old_cache}"))
+
+    found = []
+    for path, desc in old_paths:
+        if path.exists():
+            found.append((path, desc))
+
+    if not found:
+        ok("Không có gì cần dọn dẹp")
+        pause()
+        return
+
+    print("  Tìm thấy các mục cũ:\n")
+    for i, (path, desc) in enumerate(found, 1):
+        # Tính kích thước
+        if path.is_dir():
+            try:
+                size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+                if size > 1024*1024*1024:
+                    size_str = f"{size/1024/1024/1024:.1f} GB"
+                elif size > 1024*1024:
+                    size_str = f"{size/1024/1024:.0f} MB"
+                else:
+                    size_str = f"{size/1024:.0f} KB"
+            except Exception:
+                size_str = "?"
+        else:
+            size_str = f"{path.stat().st_size/1024:.0f} KB"
+        print(f"    [{i}] {path}")
+        print(f"        {desc}  ({size_str})")
+        print()
+
+    print(f"    [A] Xoá tất cả")
+    print(f"    [0] Huỷ")
+    print()
+
+    choice = input("  Chọn mục cần xoá: ").strip()
+    if not choice or choice == "0":
+        return
+
+    targets = []
+    if choice.lower() == "a":
+        targets = [p for p, _ in found]
+    else:
+        try:
+            idx = int(choice) - 1
+            targets = [found[idx][0]]
+        except (ValueError, IndexError):
+            warn("Lựa chọn không hợp lệ")
+            pause()
+            return
+
+    for path in targets:
+        if not confirm(f"Xác nhận xoá {path}?"):
+            continue
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            ok(f"Đã xoá: {path}")
+        except Exception as e:
+            fail(f"Lỗi xoá {path}: {e}")
+
+    print()
     pause()
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1373,20 +1455,21 @@ def main_menu():
         print(f"    [6]  Cài dịch vụ ML      (đăng ký NSSM)")
         print(f"    [7]  Cấu hình IIS        (reverse proxy)")
         print(f"    [8]  Gỡ dịch vụ          (xoá dịch vụ)")
+        print(f"    [9]  Dọn dẹp             (xoá cài đặt cũ)")
         print()
         print(f"  {bold('─── Quản lý ───')}")
-        print(f"    [9]  Trạng thái          (dịch vụ + health check)")
-        print(f"   [10]  Khởi động lại       (dừng + chạy lại)")
-        print(f"   [11]  Xem nhật ký")
+        print(f"   [10]  Trạng thái          (dịch vụ + health check)")
+        print(f"   [11]  Khởi động lại       (dừng + chạy lại)")
+        print(f"   [12]  Xem nhật ký")
         print()
         print(f"  {bold('─── Chế độ phát triển ───')}")
-        print(f"   [12]  Chạy dev            (mở cửa sổ cmd)")
-        print(f"   [13]  Dừng dev            (tắt tiến trình)")
+        print(f"   [13]  Chạy dev            (mở cửa sổ cmd)")
+        print(f"   [14]  Dừng dev            (tắt tiến trình)")
         print()
         print(f"    [0]  Thoát")
         print()
 
-        choice = input("  Chọn [0-13]: ").strip()
+        choice = input("  Chọn [0-14]: ").strip()
 
         if   choice == "1":  check_system()
         elif choice == "2":  cmd_dev_setup()
@@ -1396,11 +1479,12 @@ def main_menu():
         elif choice == "6":  cmd_install_services()
         elif choice == "7":  cmd_iis_setup()
         elif choice == "8":  cmd_uninstall_services()
-        elif choice == "9":  cmd_status()
-        elif choice == "10": cmd_restart_services()
-        elif choice == "11": cmd_view_logs()
-        elif choice == "12": cmd_dev_start()
-        elif choice == "13": cmd_dev_stop()
+        elif choice == "9":  cmd_cleanup()
+        elif choice == "10": cmd_status()
+        elif choice == "11": cmd_restart_services()
+        elif choice == "12": cmd_view_logs()
+        elif choice == "13": cmd_dev_start()
+        elif choice == "14": cmd_dev_stop()
         elif choice == "0":
             print(f"\n  {dim('Tạm biệt!')}\n")
             break
@@ -1416,7 +1500,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="OpenRAG — Trình quản lý triển khai")
     p.add_argument("command", nargs="?", default=None,
                    choices=["setup", "build", "deploy", "webdeploy", "services",
-                            "iis", "status", "restart", "start", "stop", "check"])
+                            "iis", "status", "restart", "start", "stop", "check", "cleanup"])
     p.add_argument("--skip-model", action="store_true",
                    help="Bỏ qua tải mô hình AI")
     p.add_argument("--force", action="store_true",
@@ -1436,3 +1520,4 @@ if __name__ == "__main__":
     elif args.command == "restart":  cmd_restart_services()
     elif args.command == "start":    cmd_dev_start()
     elif args.command == "stop":     cmd_dev_stop()
+    elif args.command == "cleanup":  cmd_cleanup()
