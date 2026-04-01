@@ -10,6 +10,8 @@ public record MlIndexResponse(string DocumentId, int ChunkCount, bool Ok);
 public record MlSearchRequest(string Query, string Collection, int TopK = 5, bool UseReranker = false, string SearchMode = "semantic", Dictionary<string, object>? MetadataFilter = null);
 public record MlDeleteDocRequest(string DocumentId, string Collection);
 public record MlDeleteDocResponse(int ChunksDeleted, bool Ok);
+public record MlUpdateMetadataRequest(string DocumentId, string Collection, Dictionary<string, string?> MetadataUpdates);
+public record MlUpdateMetadataResponse(int ChunksUpdated, bool Ok);
 public record MlCollectionRequest(string Name);
 public record MlHealthResponse(bool Ok, string Model, string Device);
 
@@ -77,6 +79,16 @@ public class MlClient(HttpClient http, ILogger<MlClient> logger)
         response.EnsureSuccessStatusCode();
         var result = await response.Content.ReadFromJsonAsync<MlDeleteDocResponse>(JsonOpts, ct);
         return result?.ChunksDeleted ?? 0;
+    }
+
+    public async Task<int> UpdateDocumentMetadataAsync(
+        string documentId, string collection, Dictionary<string, string?> metadataUpdates, CancellationToken ct = default)
+    {
+        var response = await http.PostAsJsonAsync("/ml/documents/update-metadata",
+            new MlUpdateMetadataRequest(documentId, collection, metadataUpdates), JsonOpts, ct);
+        response.EnsureSuccessStatusCode();
+        var result = await response.Content.ReadFromJsonAsync<MlUpdateMetadataResponse>(JsonOpts, ct);
+        return result?.ChunksUpdated ?? 0;
     }
 
     public async Task<List<ChunkResult>> SearchWithTextAsync(

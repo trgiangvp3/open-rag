@@ -79,6 +79,38 @@ class VectorStore:
             })
         return items
 
+    def update_document_metadata(
+        self,
+        collection_name: str,
+        document_id: str,
+        metadata_updates: dict,
+    ) -> tuple[int, list[str], list[str], list[dict]]:
+        """Update metadata on all chunks of a document without re-embedding.
+        Returns (count, chunk_ids, texts, updated_metadatas)."""
+        collection = self.get_or_create_collection(collection_name)
+        results = collection.get(
+            where={"document_id": document_id},
+            include=["metadatas", "documents"],
+        )
+        if not results["ids"]:
+            return 0, [], [], []
+
+        chunk_ids = results["ids"]
+        texts = results["documents"]
+        new_metadatas = []
+        for meta in results["metadatas"]:
+            updated = dict(meta)
+            for key, value in metadata_updates.items():
+                if value is None or value == "":
+                    updated.pop(key, None)  # ChromaDB doesn't allow None values
+                else:
+                    updated[key] = value
+            new_metadatas.append(updated)
+
+        collection.update(ids=chunk_ids, metadatas=new_metadatas)
+        logger.info(f"Updated metadata on {len(chunk_ids)} chunks for doc {document_id}")
+        return len(chunk_ids), chunk_ids, texts, new_metadatas
+
     def delete_document(self, collection_name: str, document_id: str) -> tuple[int, list[str]]:
         collection = self.get_or_create_collection(collection_name)
         results = collection.get(where={"document_id": document_id}, include=[])

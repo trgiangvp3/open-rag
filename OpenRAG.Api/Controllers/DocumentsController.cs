@@ -10,7 +10,7 @@ namespace OpenRAG.Api.Controllers;
 [Authorize]
 [ApiController]
 [Route("api/documents")]
-public class DocumentsController(DocumentService docs, AppDbContext db) : ControllerBase
+public class DocumentsController(DocumentService docs, AppDbContext db, MlClient ml) : ControllerBase
 {
     private const long MaxFileSizeBytes = 100 * 1024 * 1024; // 100 MB
     private const int MaxTextLength = 10 * 1024 * 1024;      // 10 MB
@@ -177,6 +177,89 @@ public class DocumentsController(DocumentService docs, AppDbContext db) : Contro
         return Ok(new { tags = distinct });
     }
     [Authorize(Roles = Roles.Admin)]
+    [HttpPatch("{documentId}/metadata")]
+    public async Task<IActionResult> UpdateMetadata(
+        Guid documentId, [FromBody] UpdateDocumentMetadataRequest req, CancellationToken ct = default)
+    {
+        var doc = await db.Documents
+            .Include(d => d.Collection)
+            .FirstOrDefaultAsync(d => d.Id == documentId, ct);
+        if (doc is null) return NotFound(new { detail = "Document not found" });
+        if (doc.Status == "indexing") return BadRequest(new { detail = "Document is currently being indexed" });
+
+        // Track which chunk-synced fields changed
+        var chunkUpdates = new Dictionary<string, string?>();
+
+        // Apply changes and track diffs
+        if (req.DocumentType is not null && req.DocumentType != doc.DocumentType)
+        { doc.DocumentType = req.DocumentType; chunkUpdates["document_type"] = req.DocumentType; }
+
+        if (req.DocumentTypeDisplay is not null && req.DocumentTypeDisplay != doc.DocumentTypeDisplay)
+        { doc.DocumentTypeDisplay = req.DocumentTypeDisplay; chunkUpdates["document_type_display"] = req.DocumentTypeDisplay; }
+
+        if (req.DocumentNumber is not null && req.DocumentNumber != doc.DocumentNumber)
+        { doc.DocumentNumber = req.DocumentNumber; chunkUpdates["document_number"] = req.DocumentNumber; }
+
+        if (req.DocumentTitle is not null && req.DocumentTitle != doc.DocumentTitle)
+        { doc.DocumentTitle = req.DocumentTitle; chunkUpdates["document_title"] = req.DocumentTitle; }
+
+        if (req.IssuingAuthority is not null && req.IssuingAuthority != doc.IssuingAuthority)
+        { doc.IssuingAuthority = req.IssuingAuthority; chunkUpdates["issuing_authority"] = req.IssuingAuthority; }
+
+        if (req.IssuedDate is not null)
+        {
+            var parsed = DateTime.TryParse(req.IssuedDate, out var d) ? d : (DateTime?)null;
+            if (parsed != doc.IssuedDate)
+            { doc.IssuedDate = parsed; chunkUpdates["issue_date"] = parsed?.ToString("yyyy-MM-dd"); }
+        }
+
+        if (req.Tags is not null && req.Tags != doc.Tags)
+        { doc.Tags = req.Tags; chunkUpdates["tags"] = req.Tags; }
+
+        if (req.SubjectsJson is not null && req.SubjectsJson != doc.SubjectsJson)
+        { doc.SubjectsJson = req.SubjectsJson; chunkUpdates["subjects"] = req.SubjectsJson; }
+
+        // Domain handling (resolve slug for chunks)
+        if (req.DomainId.HasValue && req.DomainId != doc.DomainId)
+        {
+            if (req.DomainId.Value == 0) // clear domain
+            {
+                doc.DomainId = null;
+                chunkUpdates["domain"] = null;
+                chunkUpdates["domain_parent"] = null;
+            }
+            else
+            {
+                var domain = await db.Domains.Include(d => d.Parent).FirstOrDefaultAsync(d => d.Id == req.DomainId, ct);
+                if (domain is null) return BadRequest(new { detail = "Domain not found" });
+                doc.DomainId = domain.Id;
+                chunkUpdates["domain"] = domain.Slug;
+                chunkUpdates["domain_parent"] = domain.Parent?.Slug;
+            }
+        }
+
+        // DB-only fields (no chunk sync needed)
+        if (req.SignedLocation is not null) doc.SignedLocation = req.SignedLocation;
+        if (req.EffectiveDate is not null)
+            doc.EffectiveDate = DateTime.TryParse(req.EffectiveDate, out var ed) ? ed : null;
+        if (req.LegalBasisJson is not null) doc.LegalBasisJson = req.LegalBasisJson;
+        if (req.TerminologyJson is not null) doc.TerminologyJson = req.TerminologyJson;
+        if (req.ReferencedDocsJson is not null) doc.ReferencedDocsJson = req.ReferencedDocsJson;
+
+        await db.SaveChangesAsync(ct);
+
+        // Sync chunk metadata if any chunk-synced fields changed
+        var chunksUpdated = 0;
+        if (chunkUpdates.Count > 0)
+        {
+            chunksUpdated = await ml.UpdateDocumentMetadataAsync(
+                doc.Id.ToString(), doc.Collection.Name, chunkUpdates, ct);
+        }
+
+        return Ok(new { status = "ok", chunksUpdated });
+    }
+
+    [Authorize(Roles = Roles.Admin)]
     [HttpPost("{documentId}/reparse")]
     public async Task<IActionResult> Reparse(Guid documentId, CancellationToken ct = default)
     {
@@ -216,4 +299,20 @@ public class DocumentsController(DocumentService docs, AppDbContext db) : Contro
 
 public record UpdateTagsRequest(string? Tags);
 public record SetDomainRequest(int? DomainId);
+public record UpdateDocumentMetadataRequest(
+    string? DocumentType = null,
+    string? DocumentTypeDisplay = null,
+    string? DocumentNumber = null,
+    string? DocumentTitle = null,
+    string? IssuingAuthority = null,
+    string? SignedLocation = null,
+    string? IssuedDate = null,
+    string? EffectiveDate = null,
+    string? Tags = null,
+    int? DomainId = null,
+    string? SubjectsJson = null,
+    string? LegalBasisJson = null,
+    string? TerminologyJson = null,
+    string? ReferencedDocsJson = null
+);
 

@@ -172,6 +172,12 @@ export interface DocumentMarkdownResponse {
 export const getDocumentMarkdown = (id: string) =>
   api.get<DocumentMarkdownResponse>(`/documents/${id}/markdown`)
 
+export const getDocumentMetadata = (id: string) =>
+  api.get<Record<string, unknown>>(`/documents/${id}/metadata`)
+
+export const updateDocumentMetadata = (id: string, data: Record<string, unknown>) =>
+  api.patch<{ status: string; chunksUpdated: number }>(`/documents/${id}/metadata`, data)
+
 export const listDomains = () =>
   api.get<{ domains: DomainInfo[] }>('/domains')
 

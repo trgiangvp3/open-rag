@@ -36,6 +36,8 @@ from schemas_ml import (
     OkResponse,
     SearchRequest,
     SearchResponse,
+    UpdateMetadataRequest,
+    UpdateMetadataResponse,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -243,6 +245,22 @@ async def delete_document(req: DeleteDocumentRequest):
     except Exception:
         logger.warning("BM25 delete failed for doc %s, ChromaDB OK", req.document_id)
     return DeleteDocumentResponse(chunks_deleted=deleted_count)
+
+
+# ── Update document metadata ─────────────────────────────────────────────────
+
+@app.post("/ml/documents/update-metadata", response_model=UpdateMetadataResponse)
+async def update_document_metadata(req: UpdateMetadataRequest):
+    """Update metadata on all chunks of a document without re-embedding."""
+    count, chunk_ids, texts, new_metadatas = store.update_document_metadata(
+        req.collection, req.document_id, req.metadata_updates
+    )
+    if chunk_ids:
+        try:
+            hybrid_searcher.get_or_create_index(req.collection).add(chunk_ids, texts, new_metadatas)
+        except Exception:
+            logger.warning("BM25 metadata update failed for doc %s, ChromaDB OK", req.document_id)
+    return UpdateMetadataResponse(chunks_updated=count)
 
 
 # ── Collections ──────────────────────────────────────────────────────────────

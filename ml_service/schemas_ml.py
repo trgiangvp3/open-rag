@@ -57,6 +57,19 @@ class DeleteDocumentResponse(BaseModel):
     ok: bool = True
 
 
+# ── /ml/documents/update-metadata ──────────────────────────────────────────
+
+class UpdateMetadataRequest(BaseModel):
+    document_id: str
+    collection: str
+    metadata_updates: dict  # key-value pairs to set/overwrite on all chunks
+
+
+class UpdateMetadataResponse(BaseModel):
+    chunks_updated: int
+    ok: bool = True
+
+
 # ── /ml/collections/* ──────────────────────────────────────────────────────
 
 class CollectionRequest(BaseModel):
