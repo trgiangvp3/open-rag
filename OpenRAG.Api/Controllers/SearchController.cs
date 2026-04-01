@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using OpenRAG.Api.Hubs;
@@ -7,6 +8,7 @@ using OpenRAG.Api.Services;
 
 namespace OpenRAG.Api.Controllers;
 
+[Authorize]
 [ApiController]
 [Route("api/search")]
 public class SearchController(MlClient ml, LlmClient llm, CollectionService collections, IHubContext<ProgressHub> hub) : ControllerBase
@@ -30,6 +32,9 @@ public class SearchController(MlClient ml, LlmClient llm, CollectionService coll
 
         if (hasFacetBoost)
             results = ApplyFacetBoost(results, req.DomainSlug, req.Subject, req.TopK);
+
+        if (req.ScoreThreshold.HasValue)
+            results = results.Where(r => (r.RerankScore ?? r.Score) >= req.ScoreThreshold.Value).ToList();
 
         if (req.Generate && llm.IsEnabled)
         {
@@ -136,6 +141,13 @@ public class SearchController(MlClient ml, LlmClient llm, CollectionService coll
 
         if (!string.IsNullOrEmpty(req.DateTo))
             conditions.Add(new() { ["issue_date"] = new Dictionary<string, object> { ["$lte"] = req.DateTo } });
+
+        if (!string.IsNullOrEmpty(req.Tags))
+        {
+            var tagList = req.Tags.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            foreach (var tag in tagList)
+                conditions.Add(new() { ["tags"] = new Dictionary<string, object> { ["$contains"] = tag } });
+        }
 
         if (conditions.Count == 0) return null;
         if (conditions.Count == 1) return conditions[0];

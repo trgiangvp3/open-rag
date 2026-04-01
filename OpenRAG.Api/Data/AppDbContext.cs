@@ -11,6 +11,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<ChatMessageEntity> ChatMessages => Set<ChatMessageEntity>();
     public DbSet<AppSetting> AppSettings => Set<AppSetting>();
     public DbSet<Domain> Domains => Set<Domain>();
+    public DbSet<User> Users => Set<User>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -47,6 +48,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.HasIndex(d => d.Status);
             e.HasIndex(d => d.CollectionId);
             e.HasIndex(d => d.DomainId);
+            e.HasIndex(d => d.ContentHash);
         });
 
         modelBuilder.Entity<ChatMessageEntity>(e =>
@@ -98,6 +100,13 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             new Domain { Id = 50, Name = "An toàn thông tin", ParentId = 5, Slug = "an-toan-thong-tin" },
             new Domain { Id = 51, Name = "Giao dịch điện tử", ParentId = 5, Slug = "giao-dich-dien-tu" }
         );
+
+        modelBuilder.Entity<User>(e =>
+        {
+            e.HasIndex(u => u.Username).IsUnique();
+        });
+
+        // Admin user is seeded at runtime by AuthService.EnsureAdminExistsAsync()
 
         // Seed default LLM settings
         modelBuilder.Entity<AppSetting>().HasData(

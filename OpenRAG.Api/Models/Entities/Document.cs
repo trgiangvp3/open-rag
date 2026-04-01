@@ -25,6 +25,7 @@ public class Document
     public string? LegalBasisJson { get; set; }       // JSON: [{text, number?, url?}]
     public string? TerminologyJson { get; set; }      // JSON: [{term, definition}]
     public string? ReferencedDocsJson { get; set; }   // JSON: [{number, title?, url}]
+    public string? ContentHash { get; set; }            // SHA256 hash for deduplication
     public string? Tags { get; set; }                 // Comma-separated manual tags
 
     // Faceted classification

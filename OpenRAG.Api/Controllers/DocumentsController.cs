@@ -1,10 +1,13 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OpenRAG.Api.Data;
+using OpenRAG.Api.Models.Entities;
 using OpenRAG.Api.Services;
 
 namespace OpenRAG.Api.Controllers;
 
+[Authorize]
 [ApiController]
 [Route("api/documents")]
 public class DocumentsController(DocumentService docs, AppDbContext db) : ControllerBase
@@ -14,6 +17,7 @@ public class DocumentsController(DocumentService docs, AppDbContext db) : Contro
     private static readonly HashSet<string> AllowedExtensions =
         [".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".txt", ".md", ".html", ".htm", ".csv"];
 
+    [Authorize(Roles = Roles.Admin)]
     [HttpPost("upload")]
     public async Task<IActionResult> Upload(
         IFormFile file,
@@ -37,6 +41,7 @@ public class DocumentsController(DocumentService docs, AppDbContext db) : Contro
         return Ok(result);
     }
 
+    [Authorize(Roles = Roles.Admin)]
     [HttpPost("text")]
     public async Task<IActionResult> IngestText(
         [FromForm] string text,
@@ -83,6 +88,7 @@ public class DocumentsController(DocumentService docs, AppDbContext db) : Contro
         return Ok(result);
     }
 
+    [Authorize(Roles = Roles.Admin)]
     [HttpDelete("{documentId}")]
     public async Task<IActionResult> Delete(
         Guid documentId,
@@ -123,6 +129,7 @@ public class DocumentsController(DocumentService docs, AppDbContext db) : Contro
         });
     }
 
+    [Authorize(Roles = Roles.Admin)]
     [HttpPut("{documentId}/domain")]
     public async Task<IActionResult> SetDomain(
         Guid documentId, [FromBody] SetDomainRequest req, CancellationToken ct = default)
@@ -141,6 +148,7 @@ public class DocumentsController(DocumentService docs, AppDbContext db) : Contro
         return Ok(new { status = "ok", domainId = doc.DomainId });
     }
 
+    [Authorize(Roles = Roles.Admin)]
     [HttpPut("{documentId}/tags")]
     public async Task<IActionResult> UpdateTags(
         Guid documentId, [FromBody] UpdateTagsRequest req, CancellationToken ct = default)
@@ -168,6 +176,7 @@ public class DocumentsController(DocumentService docs, AppDbContext db) : Contro
 
         return Ok(new { tags = distinct });
     }
+    [Authorize(Roles = Roles.Admin)]
     [HttpPost("{documentId}/reparse")]
     public async Task<IActionResult> Reparse(Guid documentId, CancellationToken ct = default)
     {

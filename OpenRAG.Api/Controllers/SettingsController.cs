@@ -1,8 +1,11 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using OpenRAG.Api.Models.Entities;
 using OpenRAG.Api.Services;
 
 namespace OpenRAG.Api.Controllers;
 
+[Authorize(Roles = Roles.Admin)]
 [ApiController]
 [Route("api/settings")]
 public class SettingsController(AppSettingsService settings) : ControllerBase

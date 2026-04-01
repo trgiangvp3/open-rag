@@ -1,4 +1,7 @@
+using System.Text;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using OpenRAG.Api.Data;
 using OpenRAG.Api.Hubs;
 using OpenRAG.Api.Services;
@@ -27,7 +30,41 @@ builder.Services.AddHttpClient<LlmClient>(client =>
 builder.Services.AddScoped<AppSettingsService>();
 builder.Services.AddScoped<DocumentService>();
 builder.Services.AddScoped<CollectionService>();
-builder.Services.AddScoped<ChatService>();
+builder.Services.AddScoped<AuthService>();
+
+// ── JWT Authentication ───────────────────────────────────────────────────
+var jwtSecret = builder.Configuration["Jwt:Secret"] ?? AuthService.DefaultJwtSecret;
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = "OpenRAG",
+            ValidAudience = "OpenRAG",
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
+        };
+
+        // Allow SignalR to use token from query string
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"];
+                var path = context.HttpContext.Request.Path;
+                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/ws"))
+                {
+                    context.Token = accessToken;
+                }
+                return Task.CompletedTask;
+            }
+        };
+    });
+
+builder.Services.AddAuthorization();
 
 // ── SignalR ───────────────────────────────────────────────────────────────
 builder.Services.AddSignalR();
@@ -47,6 +84,10 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.Migrate();
+
+    // Ensure admin user exists
+    var authService = scope.ServiceProvider.GetRequiredService<AuthService>();
+    await authService.EnsureDefaultUsersAsync();
 }
 
 app.UseCors();
@@ -54,6 +95,9 @@ app.UseCors();
 // ── Static files (Vue build output) ──────────────────────────────────────
 app.UseDefaultFiles();
 app.UseStaticFiles();
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapControllers();
 app.MapHub<ProgressHub>("/ws/progress");

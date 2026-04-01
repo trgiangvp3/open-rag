@@ -1,8 +1,10 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using OpenRAG.Api.Services;
 
 namespace OpenRAG.Api.Controllers;
 
+[Authorize]
 [ApiController]
 [Route("api/health")]
 public class HealthController(MlClient ml) : ControllerBase

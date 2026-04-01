@@ -1,14 +1,18 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using OpenRAG.Api.Models.Dto.Requests;
+using OpenRAG.Api.Models.Entities;
 using OpenRAG.Api.Services;
 using OpenRAG.Api.Services.Chunking;
 
 namespace OpenRAG.Api.Controllers;
 
+[Authorize(Roles = Roles.Admin)]
 [ApiController]
 [Route("api/collections")]
 public class CollectionsController(CollectionService collections) : ControllerBase
 {
+    [Authorize]
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken ct = default)
         => Ok(await collections.ListCollectionsAsync(ct));

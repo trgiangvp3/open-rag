@@ -176,6 +176,9 @@ namespace OpenRAG.Api.Data.Migrations
                     b.Property<int>("CollectionId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("ContentHash")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
 
@@ -244,6 +247,8 @@ namespace OpenRAG.Api.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("CollectionId");
+
+                    b.HasIndex("ContentHash");
 
                     b.HasIndex("DomainId");
 
@@ -421,6 +426,39 @@ namespace OpenRAG.Api.Data.Migrations
                             ParentId = 5,
                             Slug = "giao-dich-dien-tu"
                         });
+                });
+
+            modelBuilder.Entity("OpenRAG.Api.Models.Entities.User", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PasswordHash")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Username")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Username")
+                        .IsUnique();
+
+                    b.ToTable("Users");
                 });
 
             modelBuilder.Entity("OpenRAG.Api.Models.Entities.ChatMessageEntity", b =>

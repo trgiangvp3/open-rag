@@ -207,8 +207,14 @@ public partial class LegalDocumentChunker : IChunker
 
     private static List<(string Number, string Text)> SplitByClauses(string content)
     {
+        // Split on numbered clauses ("1.", "2.", ...) but only when the number
+        // follows a sequential order. This avoids incorrectly splitting on
+        // numbered text inside quoted amended content (e.g. "Điều 4. ...
+        // 1. Thẩm quyền..." which resets numbering inside quotes).
         var parts = ClauseSplitRegex().Split(content);
         var results = new List<(string, string)>();
+        var expectedNext = 1;
+        var pendingText = new System.Text.StringBuilder();
 
         foreach (var part in parts)
         {
@@ -216,11 +222,41 @@ public partial class LegalDocumentChunker : IChunker
             if (string.IsNullOrEmpty(trimmed)) continue;
 
             var match = Regex.Match(trimmed, @"^(\d+)\.\s*(.*)$", RegexOptions.Singleline);
-            if (match.Success)
+            if (match.Success && int.TryParse(match.Groups[1].Value, out var num) && num == expectedNext)
+            {
+                // Flush any pending text as preamble
+                if (pendingText.Length > 0 && results.Count > 0)
+                {
+                    var last = results[^1];
+                    results[^1] = (last.Item1, last.Item2 + "\n" + pendingText.ToString().Trim());
+                    pendingText.Clear();
+                }
+                else if (pendingText.Length > 0)
+                {
+                    results.Add(("0", pendingText.ToString().Trim()));
+                    pendingText.Clear();
+                }
+
                 results.Add((match.Groups[1].Value, match.Groups[2].Value.Trim()));
-            else if (results.Count == 0)
-                results.Add(("0", trimmed));
+                expectedNext = num + 1;
+            }
+            else
+            {
+                // Non-sequential number or non-numbered text → append to current clause
+                if (results.Count > 0)
+                {
+                    var last = results[^1];
+                    results[^1] = (last.Item1, last.Item2 + "\n" + trimmed);
+                }
+                else
+                {
+                    pendingText.AppendLine(trimmed);
+                }
+            }
         }
+
+        if (pendingText.Length > 0 && results.Count == 0)
+            results.Add(("0", pendingText.ToString().Trim()));
 
         return results;
     }
@@ -257,8 +293,12 @@ public partial class LegalDocumentChunker : IChunker
 
         if (_metadata.DocumentType is not null)
             meta["document_type"] = _metadata.DocumentType;
+        if (_metadata.DocumentTypeDisplay is not null)
+            meta["document_type_display"] = _metadata.DocumentTypeDisplay;
         if (_metadata.DocumentNumber is not null)
             meta["document_number"] = _metadata.DocumentNumber;
+        if (_metadata.DocumentTitle is not null)
+            meta["document_title"] = _metadata.DocumentTitle;
         if (_metadata.IssuingAuthority is not null)
             meta["issuing_authority"] = _metadata.IssuingAuthority;
         if (_metadata.IssuedDate.HasValue)

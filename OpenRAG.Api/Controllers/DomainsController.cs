@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OpenRAG.Api.Data;
@@ -5,6 +6,7 @@ using OpenRAG.Api.Models.Entities;
 
 namespace OpenRAG.Api.Controllers;
 
+[Authorize]
 [ApiController]
 [Route("api/domains")]
 public class DomainsController(AppDbContext db) : ControllerBase
@@ -29,6 +31,7 @@ public class DomainsController(AppDbContext db) : ControllerBase
         return Ok(new { domains });
     }
 
+    [Authorize(Roles = Roles.Admin)]
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateDomainRequest req, CancellationToken ct = default)
     {
@@ -48,6 +51,7 @@ public class DomainsController(AppDbContext db) : ControllerBase
         return Ok(new { domain.Id, domain.Name, domain.Slug, domain.ParentId });
     }
 
+    [Authorize(Roles = Roles.Admin)]
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(int id, CancellationToken ct = default)
     {

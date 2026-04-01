@@ -12,7 +12,8 @@ public record DocumentInfo(
     string? DocumentTitle = null,
     string? IssuingAuthority = null,
     string? IssuedDate = null,
-    string? Tags = null
+    string? Tags = null,
+    string Status = "indexed"
 );
 
 public record DocumentListResponse(List<DocumentInfo> Documents, int Total);

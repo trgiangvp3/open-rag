@@ -14,6 +14,9 @@ public record SearchRequest(
     string? DocumentType = null,
     string? DateFrom = null,
     string? DateTo = null,
+    string? Tags = null,
+    // Score threshold (post-retrieval filter)
+    [Range(0.0, 1.0)] double? ScoreThreshold = null,
     // Facet boost (soft, re-ranking)
     string? DomainSlug = null,
     string? Subject = null

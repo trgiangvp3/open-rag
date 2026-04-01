@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
@@ -18,9 +19,9 @@ public class DocumentService(
     ILogger<DocumentService> logger)
 {
 
-    private void ReportProgress(string documentId, string stage, int progress) =>
+    private void ReportProgress(string documentId, string stage, int progress, string? filename = null) =>
         hub.Clients.All.SendAsync("progress",
-            new ProgressEvent("progress", documentId, stage, progress))
+            new ProgressEvent("progress", documentId, stage, progress, filename))
             .ContinueWith(
                 t => logger.LogWarning(t.Exception, "Failed to send progress event for {DocumentId}", documentId),
                 TaskContinuationOptions.OnlyOnFaulted);
@@ -42,6 +43,17 @@ public class DocumentService(
         var ext = Path.GetExtension(filename).ToLowerInvariant();
         var isHtml = ext is ".html" or ".htm";
 
+        // Compute content hash for dedup
+        var hash = await ComputeHashAsync(fileStream, ct);
+        fileStream.Position = 0;
+
+        var col = await GetOrCreateCollectionAsync(collection, ct);
+        var existing = await db.Documents
+            .FirstOrDefaultAsync(d => d.ContentHash == hash && d.CollectionId == col.Id, ct);
+        if (existing is not null)
+            return new IngestResponse(existing.Id.ToString(), filename, existing.ChunkCount,
+                $"Duplicate: identical content already indexed as '{existing.Filename}'");
+
         // For HTML files, read content to check if it's a legal document
         string? htmlContent = null;
         if (isHtml)
@@ -54,15 +66,22 @@ public class DocumentService(
         var isLegal = htmlContent is not null && LegalHtmlParser.IsLegalHtml(htmlContent);
 
         if (isLegal)
-            return await IngestLegalHtmlAsync(htmlContent!, filename, collection, sizeBytes, tags, ct);
+            return await IngestLegalHtmlAsync(htmlContent!, filename, collection, sizeBytes, tags, ct, hash);
 
-        return await IngestGenericFileAsync(fileStream, filename, collection, sizeBytes, tags, ct);
+        return await IngestGenericFileAsync(fileStream, filename, collection, sizeBytes, tags, ct, hash);
+    }
+
+    private static async Task<string> ComputeHashAsync(Stream stream, CancellationToken ct)
+    {
+        using var sha256 = SHA256.Create();
+        var hashBytes = await sha256.ComputeHashAsync(stream, ct);
+        return Convert.ToHexString(hashBytes).ToLowerInvariant();
     }
 
     /// <summary>Legal HTML pipeline — parse + chunk entirely in C#, only send to ML for embedding.</summary>
     private async Task<IngestResponse> IngestLegalHtmlAsync(
         string html, string filename, string collection, long sizeBytes,
-        string? tags, CancellationToken ct)
+        string? tags, CancellationToken ct, string? contentHash = null)
     {
         var col = await GetOrCreateCollectionAsync(collection, ct);
         var documentId = Guid.NewGuid();
@@ -75,6 +94,7 @@ public class DocumentService(
             CollectionId = col.Id,
             SizeBytes = sizeBytes,
             Status = "indexing",
+            ContentHash = contentHash,
         };
         db.Documents.Add(doc);
         await db.SaveChangesAsync(ct);
@@ -82,7 +102,7 @@ public class DocumentService(
         try
         {
             // 1. Parse HTML for metadata + structure
-            ReportProgress(docIdStr, "parsing", 10);
+            ReportProgress(docIdStr, "parsing", 10, filename);
             var legalMeta = LegalHtmlParser.TryParse(html);
             if (legalMeta is null)
             {
@@ -131,7 +151,7 @@ public class DocumentService(
                 string.Join(", ", legalMeta.Subjects.Take(3)));
 
             // 3. Chunk by legal structure
-            ReportProgress(docIdStr, "chunking", 35);
+            ReportProgress(docIdStr, "chunking", 35, filename);
             var chunker = new LegalDocumentChunker(legalMeta, chunkSize: col.ChunkSize, chunkOverlap: col.ChunkOverlap);
             var baseMeta = new Dictionary<string, string> { ["filename"] = filename };
             if (!string.IsNullOrEmpty(doc.Tags))
@@ -157,12 +177,12 @@ public class DocumentService(
                 doc.ChunkCount = 0;
                 doc.IndexedAt = DateTime.UtcNow;
                 await db.SaveChangesAsync(ct);
-                ReportProgress(docIdStr, "done", 100);
+                ReportProgress(docIdStr, "done", 100, filename);
                 return new IngestResponse(docIdStr, filename, 0, "No content extracted");
             }
 
             // 4. Embed + store via ML service
-            ReportProgress(docIdStr, "embedding", 55);
+            ReportProgress(docIdStr, "embedding", 55, filename);
             var mlChunks = chunks.Select(c => new MlChunkInput(c.Text, c.Metadata)).ToList();
             var result = await ml.IndexChunksAsync(
                 new MlIndexRequest(docIdStr, collection, mlChunks), ct);
@@ -171,7 +191,7 @@ public class DocumentService(
             doc.ChunkCount = result.ChunkCount;
             doc.IndexedAt = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
-            ReportProgress(docIdStr, "done", 100);
+            ReportProgress(docIdStr, "done", 100, filename);
 
             return new IngestResponse(docIdStr, filename, result.ChunkCount,
                 $"Indexed {result.ChunkCount} chunks (legal: {legalMeta.DocumentTypeDisplay} {legalMeta.DocumentNumber})");
@@ -181,7 +201,7 @@ public class DocumentService(
             logger.LogError(ex, "Failed to ingest legal HTML '{Filename}'", filename);
             doc.Status = "failed";
             await db.SaveChangesAsync(ct);
-            ReportProgress(docIdStr, "failed", 0);
+            ReportProgress(docIdStr, "failed", 0, filename);
             throw;
         }
     }
@@ -189,7 +209,7 @@ public class DocumentService(
     /// <summary>Generic file pipeline — convert via ML service, then chunk markdown.</summary>
     private async Task<IngestResponse> IngestGenericFileAsync(
         Stream fileStream, string filename, string collection, long sizeBytes,
-        string? tags, CancellationToken ct)
+        string? tags, CancellationToken ct, string? contentHash = null)
     {
         var col = await GetOrCreateCollectionAsync(collection, ct);
         var documentId = Guid.NewGuid();
@@ -203,6 +223,7 @@ public class DocumentService(
             SizeBytes = sizeBytes,
             Status = "indexing",
             Tags = tags,
+            ContentHash = contentHash,
         };
         db.Documents.Add(doc);
         await db.SaveChangesAsync(ct);
@@ -216,7 +237,7 @@ public class DocumentService(
             logger.LogError(ex, "Failed to ingest '{Filename}'", filename);
             doc.Status = "failed";
             await db.SaveChangesAsync(ct);
-            ReportProgress(docIdStr, "failed", 0);
+            ReportProgress(docIdStr, "failed", 0, filename);
             throw;
         }
     }
@@ -229,12 +250,12 @@ public class DocumentService(
         var chunker = CreateChunker(col);
 
         // Convert file -> markdown
-        ReportProgress(docIdStr, "converting", 10);
+        ReportProgress(docIdStr, "converting", 10, filename);
         var markdown = await ml.ConvertFileAsync(fileStream, filename, ct);
         doc.MarkdownContent = markdown;
 
         // Chunk in .NET
-        ReportProgress(docIdStr, "chunking", 35);
+        ReportProgress(docIdStr, "chunking", 35, filename);
         var baseMeta = new Dictionary<string, string> { ["filename"] = filename };
         if (!string.IsNullOrEmpty(tags))
             baseMeta["tags"] = tags;
@@ -247,12 +268,12 @@ public class DocumentService(
             doc.ChunkCount = 0;
             doc.IndexedAt = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
-            ReportProgress(docIdStr, "done", 100);
+            ReportProgress(docIdStr, "done", 100, filename);
             return new IngestResponse(docIdStr, filename, 0, "No content extracted");
         }
 
         // Embed + store via ML service
-        ReportProgress(docIdStr, "embedding", 55);
+        ReportProgress(docIdStr, "embedding", 55, filename);
         var mlChunks = chunks.Select(c => new MlChunkInput(c.Text, c.Metadata)).ToList();
         var result = await ml.IndexChunksAsync(
             new MlIndexRequest(docIdStr, collection, mlChunks), ct);
@@ -261,7 +282,7 @@ public class DocumentService(
         doc.ChunkCount = result.ChunkCount;
         doc.IndexedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
-        ReportProgress(docIdStr, "done", 100);
+        ReportProgress(docIdStr, "done", 100, filename);
 
         return new IngestResponse(docIdStr, filename, result.ChunkCount,
             $"Indexed {result.ChunkCount} chunks");
@@ -275,7 +296,7 @@ public class DocumentService(
         var documentId = Guid.NewGuid();
         var docIdStr = documentId.ToString();
 
-        ReportProgress(docIdStr, "chunking", 35);
+        ReportProgress(docIdStr, "chunking", 35, title);
         var chunks = chunker.Chunk(text, new Dictionary<string, string> { ["filename"] = title });
 
         var doc = new Document
@@ -298,11 +319,11 @@ public class DocumentService(
                 doc.ChunkCount = 0;
                 doc.IndexedAt = DateTime.UtcNow;
                 await db.SaveChangesAsync(ct);
-                ReportProgress(docIdStr, "done", 100);
+                ReportProgress(docIdStr, "done", 100, title);
                 return new IngestResponse(docIdStr, title, 0, "No content to index");
             }
 
-            ReportProgress(docIdStr, "embedding", 55);
+            ReportProgress(docIdStr, "embedding", 55, title);
             var mlChunks = chunks.Select(c => new MlChunkInput(c.Text, c.Metadata)).ToList();
             var result = await ml.IndexChunksAsync(
                 new MlIndexRequest(docIdStr, collection, mlChunks), ct);
@@ -311,7 +332,7 @@ public class DocumentService(
             doc.ChunkCount = result.ChunkCount;
             doc.IndexedAt = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
-            ReportProgress(docIdStr, "done", 100);
+            ReportProgress(docIdStr, "done", 100, title);
 
             return new IngestResponse(docIdStr, title, result.ChunkCount,
                 $"Indexed {result.ChunkCount} chunks");
@@ -321,7 +342,7 @@ public class DocumentService(
             logger.LogError(ex, "Failed to ingest text '{Title}'", title);
             doc.Status = "failed";
             await db.SaveChangesAsync(ct);
-            ReportProgress(docIdStr, "failed", 0);
+            ReportProgress(docIdStr, "failed", 0, title);
             throw;
         }
     }
@@ -330,8 +351,9 @@ public class DocumentService(
     {
         var docs = await db.Documents
             .Include(d => d.Collection)
-            .Where(d => d.Collection.Name == collection && d.Status == "indexed")
-            .OrderByDescending(d => d.CreatedAt)
+            .Where(d => d.Collection.Name == collection)
+            .OrderByDescending(d => d.Status == "indexing" ? 1 : 0) // indexing first
+            .ThenByDescending(d => d.CreatedAt)
             .Select(d => new DocumentInfo(
                 d.Id.ToString(),
                 d.Filename,
@@ -344,7 +366,8 @@ public class DocumentService(
                 d.DocumentTitle,
                 d.IssuingAuthority,
                 d.IssuedDate.HasValue ? d.IssuedDate.Value.ToString("yyyy-MM-dd") : null,
-                d.Tags))
+                d.Tags,
+                d.Status))
             .ToListAsync(ct);
 
         return new DocumentListResponse(docs, docs.Count);

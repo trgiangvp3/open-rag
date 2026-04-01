@@ -2,6 +2,27 @@ import axios from 'axios'
 
 export const api = axios.create({ baseURL: '/api' })
 
+export const TOKEN_KEY = 'openrag_token'
+
+// Callback set by auth store to handle logout reactively (avoids circular import)
+let onUnauthorized: (() => void) | null = null
+export function setUnauthorizedHandler(handler: () => void) {
+  onUnauthorized = handler
+}
+
+api.interceptors.response.use(
+  response => response,
+  error => {
+    if (error.response?.status === 401 && api.defaults.headers.common['Authorization']) {
+      // Only clear if we had a token (prevents loop on login attempts)
+      localStorage.removeItem(TOKEN_KEY)
+      delete api.defaults.headers.common['Authorization']
+      onUnauthorized?.()
+    }
+    return Promise.reject(error)
+  }
+)
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface ChunkResult {
@@ -32,6 +53,7 @@ export interface DocumentInfo {
   issuingAuthority?: string
   issuedDate?: string
   tags?: string
+  status?: string // "indexed" | "indexing" | "failed"
 }
 
 export interface DocumentListResponse {
@@ -80,11 +102,12 @@ export interface StatusResponse {
 export interface SearchOptions {
   useReranker?: boolean
   searchMode?: 'semantic' | 'hybrid'
-  queryStrategy?: 'direct' | 'multi-query' | 'hyde' | 'multi-query+hyde'
   generate?: boolean
   documentType?: string
   dateFrom?: string
   dateTo?: string
+  tags?: string
+  scoreThreshold?: number
   domainSlug?: string
   subject?: string
 }
@@ -94,23 +117,6 @@ export interface DomainInfo {
   name: string
   slug: string
   children?: DomainInfo[]
-}
-
-export interface ChatRequest {
-  query: string
-  collection?: string
-  sessionId?: string
-  topK?: number
-  useReranker?: boolean
-  searchMode?: string
-  queryStrategy?: string
-}
-
-export interface ChatResponse {
-  sessionId: string
-  answer?: string
-  citations?: number[]
-  chunks: ChunkResult[]
 }
 
 // ── Search ─────────────────────────────────────────────────────────────────
@@ -166,20 +172,8 @@ export interface DocumentMarkdownResponse {
 export const getDocumentMarkdown = (id: string) =>
   api.get<DocumentMarkdownResponse>(`/documents/${id}/markdown`)
 
-export const getDocumentMetadata = (id: string) =>
-  api.get(`/documents/${id}/metadata`)
-
-export const updateDocumentTags = (id: string, tags: string | null) =>
-  api.put(`/documents/${id}/tags`, { tags })
-
-export const listTags = () =>
-  api.get<{ tags: string[] }>('/tags')
-
 export const listDomains = () =>
   api.get<{ domains: DomainInfo[] }>('/domains')
-
-export const setDocumentDomain = (id: string, domainId: number | null) =>
-  api.put(`/documents/${id}/domain`, { domainId })
 
 // ── Collections ────────────────────────────────────────────────────────────
 
@@ -202,22 +196,6 @@ export const testHeadingScript = (name: string, script: string, sampleText: stri
 
 export const health = () =>
   api.get<{ status: string }>('/health')
-
-// ── Chat ───────────────────────────────────────────────────────────────────
-
-export const chat = (req: ChatRequest) =>
-  api.post<ChatResponse>('/chat', req)
-
-export interface ChatHistoryResponse {
-  sessionId: string
-  messages: { role: string; content: string }[]
-}
-
-export const getChatHistory = (sessionId: string) =>
-  api.get<ChatHistoryResponse>(`/chat/${sessionId}/history`)
-
-export const deleteChatSession = (sessionId: string) =>
-  api.delete(`/chat/${sessionId}`)
 
 // ── Settings ──────────────────────────────────────────────────────────────
 
