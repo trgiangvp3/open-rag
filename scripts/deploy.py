@@ -1421,46 +1421,75 @@ def _sync_data_to_server(password: str):
 
     remote = f"computerName='{WEB_DEPLOY_URL}',userName='{WEB_DEPLOY_USER}',password='{password}',authType='Basic'"
 
-    def msdeploy_sync(source_arg: str, dest_arg: str) -> subprocess.CompletedProcess:
-        """Run msdeploy -verb:sync with source (local) and dest (remote)."""
-        cmd = f'"{msdeploy}" -verb:sync -source:{source_arg} -dest:{dest_arg},{remote} -allowUntrusted'
-        return subprocess.run(cmd, capture_output=True, text=True, shell=True)
+    def msdeploy_file(src_path: Path, dest_path: Path) -> tuple[bool, str]:
+        """Sync a single file. Returns (success, error_msg)."""
+        cmd = f'"{msdeploy}" -verb:sync -source:filePath=\'{src_path}\' -dest:filePath=\'{dest_path}\',{remote} -allowUntrusted'
+        r = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+        if r.returncode == 0:
+            return True, ""
+        err = r.stderr.strip()
+        if "ERROR_FILE_IN_USE" in err:
+            return False, "bị khoá"
+        return False, err[:120]
+
+    def sync_dir(src_dir: Path, dest_dir: Path, label: str):
+        """Sync a directory file-by-file with progress."""
+        files = sorted(f for f in src_dir.rglob("*") if f.is_file())
+        if not files:
+            return
+        total_bytes = sum(f.stat().st_size for f in files)
+        done_bytes = 0
+        synced = 0
+        skipped = []
+
+        print()
+        info(f"Đồng bộ {label} ({len(files)} files, {total_bytes / 1024 / 1024:.1f} MB)")
+
+        for i, f in enumerate(files):
+            rel = f.relative_to(src_dir)
+            dest_file = dest_dir / rel
+            size = f.stat().st_size
+            pct = int(done_bytes / total_bytes * 100) if total_bytes else 0
+            # Progress line (overwrite)
+            short_name = str(rel)
+            if len(short_name) > 50:
+                short_name = "..." + short_name[-47:]
+            sys.stdout.write(f"\r  [{pct:3d}%] ({i+1}/{len(files)}) {short_name:<52}")
+            sys.stdout.flush()
+
+            success, err = msdeploy_file(f, dest_file)
+            if success:
+                synced += 1
+            else:
+                skipped.append((rel, err))
+            done_bytes += size
+
+        # Final 100%
+        sys.stdout.write(f"\r  [100%] ({len(files)}/{len(files)}) {'Hoàn tất':<52}\n")
+        sys.stdout.flush()
+
+        ok(f"{label}: {synced}/{len(files)} files đồng bộ")
+        if skipped:
+            warn(f"{len(skipped)} files bỏ qua:")
+            for rel, err in skipped:
+                print(f"    {rel} — {err}")
 
     # Sync DB → C:\OpenRAG\AppData\openrag.db
     if has_db:
         info("Đồng bộ openrag.db → AppData/...")
-        r = msdeploy_sync(
-            f"filePath='{db_file}'",
-            f"filePath='{INSTALL_DIR / 'AppData' / 'openrag.db'}'",
-        )
-        if r.returncode == 0:
+        success, err = msdeploy_file(db_file, INSTALL_DIR / "AppData" / "openrag.db")
+        if success:
             ok("Đã đồng bộ openrag.db")
         else:
-            warn(f"Lỗi đồng bộ DB: {r.stderr.strip()[:200]}")
+            warn(f"Lỗi đồng bộ DB: {err}")
 
-    # Sync chroma/ → C:\OpenRAG\data\chroma\
+    # Sync chroma/ → C:\OpenRAG\data\chroma\ (file-by-file)
     if has_chroma:
-        info("Đồng bộ chroma/ → data/chroma/...")
-        r = msdeploy_sync(
-            f"contentPath='{chroma_dir}'",
-            f"contentPath='{INSTALL_DIR / 'data' / 'chroma'}'",
-        )
-        if r.returncode == 0:
-            ok("Đã đồng bộ chroma/")
-        else:
-            warn(f"Lỗi đồng bộ chroma: {r.stderr.strip()[:200]}")
+        sync_dir(chroma_dir, INSTALL_DIR / "data" / "chroma", "chroma")
 
-    # Sync bm25/ → C:\OpenRAG\data\bm25\
+    # Sync bm25/ → C:\OpenRAG\data\bm25\ (file-by-file)
     if has_bm25:
-        info("Đồng bộ bm25/ → data/bm25/...")
-        r = msdeploy_sync(
-            f"contentPath='{bm25_dir}'",
-            f"contentPath='{INSTALL_DIR / 'data' / 'bm25'}'",
-        )
-        if r.returncode == 0:
-            ok("Đã đồng bộ bm25/")
-        else:
-            warn(f"Lỗi đồng bộ bm25: {r.stderr.strip()[:200]}")
+        sync_dir(bm25_dir, INSTALL_DIR / "data" / "bm25", "bm25")
 
 
 def cmd_web_deploy():
